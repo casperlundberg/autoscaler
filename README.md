@@ -64,7 +64,21 @@ make build    # build ./bin/autoscaler
 make run      # run locally on :8080
 ```
 
-Deployment is `deploy/chart`. Two values have no defaults on purpose:
+## The rest of the platform
+
+This service is useful on its own — anything that can describe a queue can
+drive it. It was built alongside two others, in sibling repositories:
+
+- **simlab-api** — replays mining workloads against this service and records
+  every decision, so two policies can be compared on identical work. Its
+  `deploy/platform` chart installs all three into one namespace, and its
+  `verify.sh` runs the whole platform for real.
+- **simlab-web** — the browser app for defining runs, reading their timelines,
+  and editing a live target's settings.
+
+## Deployment
+
+`deploy/chart`. Two values have no defaults on purpose:
 `auth.token` (a service holding platform credentials must not ship with a
 well-known one) and `persistence.storageClassName` (unset on a cluster with no
 default class produces a PVC that stays Pending with nothing explaining why).
