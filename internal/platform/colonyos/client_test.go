@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/autoscaler/internal/platform/colonyos"
+	"github.com/casperlundberg/autoscaler/internal/platform/colonyos/colonytest"
 )
 
 var submitted = time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -45,12 +46,12 @@ func identity(t *testing.T) *colonyos.Identity {
 
 func TestWaitingProcessesAreReadBackWithTheirPriorityAndAge(t *testing.T) {
 	me := identity(t)
-	fake := newFakeColonies(t, me.ID())
-	fake.waiting = []colonyos.Process{
-		process("a", 100, submitted, "bemis", map[string]string{"exec_seconds": "12"}),
-		process("b", 25, submitted.Add(-time.Minute), "bemis", nil),
+	fake := colonytest.New(t, me.ID())
+	fake.Waiting = []colonyos.Process{
+		colonytest.Job("a", 100, submitted, "bemis", map[string]string{"exec_seconds": "12"}),
+		colonytest.Job("b", 25, submitted.Add(-time.Minute), "bemis", nil),
 	}
-	server := fake.start()
+	server := fake.Start()
 
 	got, err := clientFor(t, server.URL).GetProcesses(context.Background(),
 		"dev", colonyos.StateWaiting, "bemis", 100, me)
@@ -77,12 +78,12 @@ func TestWaitingProcessesAreReadBackWithTheirPriorityAndAge(t *testing.T) {
 // the server's own result cap truncating the rows that were wanted.
 func TestTheExecutorTypeFilterIsSentToTheServer(t *testing.T) {
 	me := identity(t)
-	fake := newFakeColonies(t, me.ID())
-	fake.waiting = []colonyos.Process{
-		process("mine-a", 100, submitted, "bemis-storhall", nil),
-		process("mine-b", 100, submitted, "bemis-kvarnberg", nil),
+	fake := colonytest.New(t, me.ID())
+	fake.Waiting = []colonyos.Process{
+		colonytest.Job("mine-a", 100, submitted, "bemis-storhall", nil),
+		colonytest.Job("mine-b", 100, submitted, "bemis-kvarnberg", nil),
 	}
-	server := fake.start()
+	server := fake.Start()
 
 	got, err := clientFor(t, server.URL).GetProcesses(context.Background(),
 		"dev", colonyos.StateWaiting, "bemis-storhall", 100, me)
@@ -93,20 +94,20 @@ func TestTheExecutorTypeFilterIsSentToTheServer(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "mine-a" {
 		t.Errorf("GetProcesses() = %+v, want only the storhall process", got)
 	}
-	if fake.lastRequest["executortype"] != "bemis-storhall" {
+	if fake.LastRequest["executortype"] != "bemis-storhall" {
 		t.Errorf("executortype sent = %v, want the filter applied server-side",
-			fake.lastRequest["executortype"])
+			fake.LastRequest["executortype"])
 	}
-	if fake.lastRequest["colonyname"] != "dev" {
-		t.Errorf("colonyname sent = %v, want dev", fake.lastRequest["colonyname"])
+	if fake.LastRequest["colonyname"] != "dev" {
+		t.Errorf("colonyname sent = %v, want dev", fake.LastRequest["colonyname"])
 	}
 }
 
 func TestRunningProcessesAreRequestedByState(t *testing.T) {
 	me := identity(t)
-	fake := newFakeColonies(t, me.ID())
-	fake.running = []colonyos.Process{process("r", 100, submitted, "bemis", nil)}
-	server := fake.start()
+	fake := colonytest.New(t, me.ID())
+	fake.Running = []colonyos.Process{colonytest.Job("r", 100, submitted, "bemis", nil)}
+	server := fake.Start()
 
 	got, err := clientFor(t, server.URL).GetProcesses(context.Background(),
 		"dev", colonyos.StateRunning, "bemis", 100, me)
@@ -119,8 +120,8 @@ func TestRunningProcessesAreRequestedByState(t *testing.T) {
 }
 
 func TestAnUnknownIdentityIsRejectedByTheServer(t *testing.T) {
-	fake := newFakeColonies(t, "somebody-else")
-	server := fake.start()
+	fake := colonytest.New(t, "somebody-else")
+	server := fake.Start()
 
 	_, err := clientFor(t, server.URL).GetProcesses(context.Background(),
 		"dev", colonyos.StateWaiting, "bemis", 100, identity(t))
@@ -135,9 +136,9 @@ func TestAnUnknownIdentityIsRejectedByTheServer(t *testing.T) {
 
 func TestAServerErrorIsReportedWithItsMessage(t *testing.T) {
 	me := identity(t)
-	fake := newFakeColonies(t, me.ID())
-	fake.failWith = "database is unavailable"
-	server := fake.start()
+	fake := colonytest.New(t, me.ID())
+	fake.FailWith = "database is unavailable"
+	server := fake.Start()
 
 	_, err := clientFor(t, server.URL).GetProcesses(context.Background(),
 		"dev", colonyos.StateWaiting, "bemis", 100, me)
@@ -148,11 +149,11 @@ func TestAServerErrorIsReportedWithItsMessage(t *testing.T) {
 
 func TestReachingTheResultCapIsReportedRatherThanSilentlyTruncating(t *testing.T) {
 	me := identity(t)
-	fake := newFakeColonies(t, me.ID())
+	fake := colonytest.New(t, me.ID())
 	for i := 0; i < 5; i++ {
-		fake.waiting = append(fake.waiting, process("p", 100, submitted, "bemis", nil))
+		fake.Waiting = append(fake.Waiting, colonytest.Job("p", 100, submitted, "bemis", nil))
 	}
-	server := fake.start()
+	server := fake.Start()
 
 	// A count of 5 returning exactly 5 means the queue was probably longer.
 	// Processes come back ordered by priority-time, so a truncated read loses
@@ -170,8 +171,8 @@ func TestReachingTheResultCapIsReportedRatherThanSilentlyTruncating(t *testing.T
 
 func TestValidateProvesTheKeyIsAMemberOfTheColony(t *testing.T) {
 	me := identity(t)
-	fake := newFakeColonies(t, me.ID())
-	server := fake.start()
+	fake := colonytest.New(t, me.ID())
+	server := fake.Start()
 
 	if err := clientFor(t, server.URL).CheckAccess(context.Background(), "dev", me); err != nil {
 		t.Errorf("CheckAccess() = %v, want nil", err)
@@ -179,8 +180,8 @@ func TestValidateProvesTheKeyIsAMemberOfTheColony(t *testing.T) {
 }
 
 func TestValidateFailsForAKeyThatIsNotAMember(t *testing.T) {
-	fake := newFakeColonies(t, "somebody-else")
-	server := fake.start()
+	fake := colonytest.New(t, "somebody-else")
+	server := fake.Start()
 
 	if err := clientFor(t, server.URL).CheckAccess(context.Background(), "dev", identity(t)); err == nil {
 		t.Error("CheckAccess() = nil, want a refusal")

@@ -6,14 +6,15 @@ import (
 	"testing"
 
 	"github.com/casperlundberg/autoscaler/internal/platform/kubernetes"
+	"github.com/casperlundberg/autoscaler/internal/platform/kubernetes/kubetest"
 )
 
-func clientAgainst(t *testing.T, api *fakeAPI) *kubernetes.Client {
+func clientAgainst(t *testing.T, api *kubetest.Server) *kubernetes.Client {
 	t.Helper()
-	server := api.start()
+	server := api.Start()
 
 	client, err := kubernetes.NewClient(kubernetes.ClientOptions{
-		APIServer: server.URL, Token: api.token, Namespace: "mining",
+		APIServer: server.URL, Token: api.Token, Namespace: "mining",
 	})
 	if err != nil {
 		t.Fatalf("NewClient() = %v", err)
@@ -46,7 +47,7 @@ func executorSpec() kubernetes.DeploymentSpec {
 // and an image, the autoscaler can bring an executor pool into existence, not
 // only resize one somebody else created.
 func TestEnsureDeploymentCreatesAPoolThatDoesNotExistYet(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 	client := clientAgainst(t, api)
 
 	created, err := client.EnsureDeployment(context.Background(), executorSpec())
@@ -56,9 +57,9 @@ func TestEnsureDeploymentCreatesAPoolThatDoesNotExistYet(t *testing.T) {
 	if !created {
 		t.Error("created = false, want true for a Deployment that did not exist")
 	}
-	if api.replicas("executor-storhall-local") != 0 {
+	if api.Replicas("executor-storhall-local") != 0 {
 		t.Errorf("replicas = %d, want a pool created at 0 and scaled up by a decision",
-			api.replicas("executor-storhall-local"))
+			api.Replicas("executor-storhall-local"))
 	}
 }
 
@@ -66,7 +67,7 @@ func TestEnsureDeploymentCreatesAPoolThatDoesNotExistYet(t *testing.T) {
 // zero and lets the first decision size it, but the client itself must honour
 // whatever it is given.
 func TestANewPoolIsCreatedAtTheRequestedSize(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 	spec := executorSpec()
 	spec.Replicas = 7
 
@@ -74,14 +75,14 @@ func TestANewPoolIsCreatedAtTheRequestedSize(t *testing.T) {
 		t.Fatalf("EnsureDeployment() = %v", err)
 	}
 
-	if got := api.replicas("executor-storhall-local"); got != 7 {
+	if got := api.Replicas("executor-storhall-local"); got != 7 {
 		t.Errorf("replicas = %d, want the requested 7", got)
 	}
 }
 
 func TestEnsureDeploymentLeavesAnExistingPoolAlone(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-storhall-local", 12, map[string]string{"app": "colonyos-executor"})
+	api := kubetest.New(t).
+		WithDeployment("executor-storhall-local", 12, map[string]string{"app": "colonyos-executor"})
 	client := clientAgainst(t, api)
 
 	created, err := client.EnsureDeployment(context.Background(), executorSpec())
@@ -94,18 +95,18 @@ func TestEnsureDeploymentLeavesAnExistingPoolAlone(t *testing.T) {
 	}
 	// Re-creating would reset the replica count and roll every running pod,
 	// in the middle of whatever burst the pool is serving.
-	if got := api.replicas("executor-storhall-local"); got != 12 {
+	if got := api.Replicas("executor-storhall-local"); got != 12 {
 		t.Errorf("replicas = %d, want the existing 12 untouched", got)
 	}
 }
 
 func TestTheCreatedPodSpecCarriesEverythingAnExecutorNeeds(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 	if _, err := clientAgainst(t, api).EnsureDeployment(context.Background(), executorSpec()); err != nil {
 		t.Fatalf("EnsureDeployment() = %v", err)
 	}
 
-	body := api.createdDeployment("executor-storhall-local")
+	body := api.CreatedDeployment("executor-storhall-local")
 	if body == "" {
 		t.Fatal("no Deployment was posted")
 	}
@@ -127,12 +128,12 @@ func TestTheCreatedPodSpecCarriesEverythingAnExecutorNeeds(t *testing.T) {
 // read a pod spec. It goes in a Secret and is referenced, so the key is
 // visible only to whoever can read Secrets in that namespace.
 func TestThePrivateKeyIsReferencedFromASecretNotInlined(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 	if _, err := clientAgainst(t, api).EnsureDeployment(context.Background(), executorSpec()); err != nil {
 		t.Fatalf("EnsureDeployment() = %v", err)
 	}
 
-	body := api.createdDeployment("executor-storhall-local")
+	body := api.CreatedDeployment("executor-storhall-local")
 	if !strings.Contains(body, "secretKeyRef") {
 		t.Errorf("posted Deployment does not reference a Secret:\n%s", body)
 	}
@@ -142,20 +143,20 @@ func TestThePrivateKeyIsReferencedFromASecretNotInlined(t *testing.T) {
 }
 
 func TestEnsureSecretCreatesTheKeyMaterialItReferences(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 
 	if err := clientAgainst(t, api).EnsureSecret(context.Background(), "colonies-storhall",
 		map[string]string{"prvkey": "fcc79953"}); err != nil {
 		t.Fatalf("EnsureSecret() = %v", err)
 	}
 
-	if got := api.secretValue("colonies-storhall", "prvkey"); got != "fcc79953" {
+	if got := api.SecretValue("colonies-storhall", "prvkey"); got != "fcc79953" {
 		t.Errorf("stored secret value = %q, want the key material", got)
 	}
 }
 
 func TestEnsureSecretUpdatesAKeyThatHasBeenRotated(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 	client := clientAgainst(t, api)
 
 	if err := client.EnsureSecret(context.Background(), "colonies-storhall",
@@ -167,14 +168,14 @@ func TestEnsureSecretUpdatesAKeyThatHasBeenRotated(t *testing.T) {
 		t.Fatalf("second EnsureSecret() = %v", err)
 	}
 
-	if got := api.secretValue("colonies-storhall", "prvkey"); got != "rotated" {
+	if got := api.SecretValue("colonies-storhall", "prvkey"); got != "rotated" {
 		t.Errorf("stored secret value = %q, want the rotated key", got)
 	}
 }
 
 func TestARefusedDeploymentCreationIsReported(t *testing.T) {
-	api := newFakeAPI(t)
-	api.failNextCreate = true
+	api := kubetest.New(t)
+	api.FailNextCreate = true
 
 	_, err := clientAgainst(t, api).EnsureDeployment(context.Background(), executorSpec())
 	if err == nil {
@@ -189,7 +190,7 @@ func TestADeploymentSpecWithNoImageIsRefusedBeforeAnyCall(t *testing.T) {
 	spec := executorSpec()
 	spec.Image = ""
 
-	_, err := clientAgainst(t, newFakeAPI(t)).EnsureDeployment(context.Background(), spec)
+	_, err := clientAgainst(t, kubetest.New(t)).EnsureDeployment(context.Background(), spec)
 	if err == nil || !strings.Contains(err.Error(), "image") {
 		t.Errorf("EnsureDeployment() = %v, want a complaint about the missing image", err)
 	}

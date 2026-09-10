@@ -8,6 +8,7 @@ import (
 	"github.com/casperlundberg/autoscaler/internal/domain"
 	"github.com/casperlundberg/autoscaler/internal/platform"
 	"github.com/casperlundberg/autoscaler/internal/platform/kubernetes"
+	"github.com/casperlundberg/autoscaler/internal/platform/kubernetes/kubetest"
 	"github.com/casperlundberg/autoscaler/internal/secret"
 )
 
@@ -50,12 +51,12 @@ func TestTheAdapterAnnouncesThatItCannotSeeAQueue(t *testing.T) {
 }
 
 func TestObserveCountsReadyPodsAndTreatsTheRestAsPending(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 5, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 2, map[string]string{"app": "executor-cloud"}).
-		withPods(map[string]string{"app": "executor-local"}, 3, 2).
-		withPods(map[string]string{"app": "executor-cloud"}, 2, 0)
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 5, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 2, map[string]string{"app": "executor-cloud"}).
+		WithPods(map[string]string{"app": "executor-local"}, 3, 2).
+		WithPods(map[string]string{"app": "executor-cloud"}, 2, 0)
+	server := api.Start()
 
 	got, err := kubernetes.New().Observe(context.Background(), targetFor(server.URL, nil))
 	if err != nil {
@@ -75,11 +76,11 @@ func TestObserveCountsReadyPodsAndTreatsTheRestAsPending(t *testing.T) {
 // has not arrived. Counting it as usable is what makes a controller believe it
 // has more throughput than it does.
 func TestPodsThatAreNotReadyAreNotCountedAsCapacity(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 4, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"}).
-		withPods(map[string]string{"app": "executor-local"}, 1, 3)
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 4, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"}).
+		WithPods(map[string]string{"app": "executor-local"}, 1, 3)
+	server := api.Start()
 
 	got, err := kubernetes.New().Observe(context.Background(), targetFor(server.URL, nil))
 	if err != nil {
@@ -99,11 +100,11 @@ func TestPodsThatAreNotReadyAreNotCountedAsCapacity(t *testing.T) {
 // controller that could not see the request it already made would issue it
 // again every cycle.
 func TestPendingIncludesReplicasTheSchedulerHasNotCreatedYet(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 10, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"}).
-		withPods(map[string]string{"app": "executor-local"}, 2, 0)
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 10, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"}).
+		WithPods(map[string]string{"app": "executor-local"}, 2, 0)
+	server := api.Start()
 
 	got, err := kubernetes.New().Observe(context.Background(), targetFor(server.URL, nil))
 	if err != nil {
@@ -117,11 +118,11 @@ func TestPendingIncludesReplicasTheSchedulerHasNotCreatedYet(t *testing.T) {
 
 func TestMoreReadyPodsThanReplicasNeverProducesNegativePending(t *testing.T) {
 	// Happens for real mid-scale-down, while terminating pods are still Ready.
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 1, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"}).
-		withPods(map[string]string{"app": "executor-local"}, 4, 0)
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 1, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"}).
+		WithPods(map[string]string{"app": "executor-local"}, 4, 0)
+	server := api.Start()
 
 	got, err := kubernetes.New().Observe(context.Background(), targetFor(server.URL, nil))
 	if err != nil {
@@ -134,10 +135,10 @@ func TestMoreReadyPodsThanReplicasNeverProducesNegativePending(t *testing.T) {
 }
 
 func TestApplyScalesBothDeployments(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 2, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 2, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
+	server := api.Start()
 
 	got, err := kubernetes.New().Apply(context.Background(), targetFor(server.URL, nil),
 		domain.Plan{LocalExecutors: 8, CloudExecutors: 3})
@@ -145,11 +146,11 @@ func TestApplyScalesBothDeployments(t *testing.T) {
 		t.Fatalf("Apply() = %v", err)
 	}
 
-	if api.replicas("executor-local") != 8 {
-		t.Errorf("local replicas = %d, want 8", api.replicas("executor-local"))
+	if api.Replicas("executor-local") != 8 {
+		t.Errorf("local replicas = %d, want 8", api.Replicas("executor-local"))
 	}
-	if api.replicas("executor-cloud") != 3 {
-		t.Errorf("cloud replicas = %d, want 3", api.replicas("executor-cloud"))
+	if api.Replicas("executor-cloud") != 3 {
+		t.Errorf("cloud replicas = %d, want 3", api.Replicas("executor-cloud"))
 	}
 	if !got.Changed {
 		t.Error("Changed = false, want true")
@@ -163,26 +164,26 @@ func TestApplyScalesBothDeployments(t *testing.T) {
 // Deployment itself risks writing the pod template, which rolls the whole pool
 // in the middle of a burst.
 func TestApplyUsesTheScaleSubresource(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 2, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 2, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
+	server := api.Start()
 
 	if _, err := kubernetes.New().Apply(context.Background(), targetFor(server.URL, nil),
 		domain.Plan{LocalExecutors: 3}); err != nil {
 		t.Fatalf("Apply() = %v", err)
 	}
 
-	if !api.sawRequest("PATCH /apis/apps/v1/namespaces/mining/deployments/executor-local/scale") {
+	if !api.SawRequest("PATCH /apis/apps/v1/namespaces/mining/deployments/executor-local/scale") {
 		t.Error("no PATCH to the scale subresource was sent")
 	}
 }
 
 func TestApplySkipsATierThatIsAlreadyWhereItShouldBe(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 4, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 4, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
+	server := api.Start()
 
 	got, err := kubernetes.New().Apply(context.Background(), targetFor(server.URL, nil),
 		domain.Plan{LocalExecutors: 4, CloudExecutors: 0})
@@ -193,7 +194,7 @@ func TestApplySkipsATierThatIsAlreadyWhereItShouldBe(t *testing.T) {
 	if got.Changed {
 		t.Error("Changed = true when both tiers already matched the plan")
 	}
-	if api.sawRequest("PATCH") {
+	if api.SawRequest("PATCH") {
 		t.Error("a write was sent for a plan that changed nothing")
 	}
 }
@@ -202,11 +203,11 @@ func TestApplySkipsATierThatIsAlreadyWhereItShouldBe(t *testing.T) {
 // loop believing capacity it never got, and the next cycle would compute from
 // a fiction.
 func TestARejectedScaleIsReportedAsAnError(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 2, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
-	api.failNextPatch = true
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 2, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
+	api.FailNextPatch = true
+	server := api.Start()
 
 	_, err := kubernetes.New().Apply(context.Background(), targetFor(server.URL, nil),
 		domain.Plan{LocalExecutors: 8})
@@ -219,8 +220,8 @@ func TestARejectedScaleIsReportedAsAnError(t *testing.T) {
 }
 
 func TestABadTokenIsReportedAsAnAuthenticationProblem(t *testing.T) {
-	api := newFakeAPI(t).withDeployment("executor-local", 1, map[string]string{"app": "x"})
-	server := api.start()
+	api := kubetest.New(t).WithDeployment("executor-local", 1, map[string]string{"app": "x"})
+	server := api.Start()
 
 	target := targetFor(server.URL, nil)
 	target.Credentials = secret.NewBundle(map[string]string{"bearer_token": "wrong"})
@@ -236,7 +237,7 @@ func TestABadTokenIsReportedAsAnAuthenticationProblem(t *testing.T) {
 }
 
 func TestAMissingDeploymentIsReportedByName(t *testing.T) {
-	server := newFakeAPI(t).start()
+	server := kubetest.New(t).Start()
 
 	_, err := kubernetes.New().Observe(context.Background(), targetFor(server.URL, nil))
 	if err == nil {
@@ -248,10 +249,10 @@ func TestAMissingDeploymentIsReportedByName(t *testing.T) {
 }
 
 func TestATargetWithNoCloudDeploymentIsLocalOnly(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 3, map[string]string{"app": "executor-local"}).
-		withPods(map[string]string{"app": "executor-local"}, 3, 0)
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 3, map[string]string{"app": "executor-local"}).
+		WithPods(map[string]string{"app": "executor-local"}, 3, 0)
+	server := api.Start()
 	target := targetFor(server.URL, map[string]string{"cloud_deployment": ""})
 
 	got, err := kubernetes.New().Observe(context.Background(), target)
@@ -264,8 +265,8 @@ func TestATargetWithNoCloudDeploymentIsLocalOnly(t *testing.T) {
 }
 
 func TestAskingALocalOnlyTargetForCloudCapacityIsRefusedClearly(t *testing.T) {
-	api := newFakeAPI(t).withDeployment("executor-local", 3, map[string]string{"app": "executor-local"})
-	server := api.start()
+	api := kubetest.New(t).WithDeployment("executor-local", 3, map[string]string{"app": "executor-local"})
+	server := api.Start()
 	target := targetFor(server.URL, map[string]string{"cloud_deployment": ""})
 
 	_, err := kubernetes.New().Apply(context.Background(), target, domain.Plan{CloudExecutors: 2})
@@ -280,10 +281,10 @@ func TestAskingALocalOnlyTargetForCloudCapacityIsRefusedClearly(t *testing.T) {
 // Registration is the moment to find out that a token is wrong or a name is
 // misspelled — not three in the morning during a burst.
 func TestValidateProvesTheCredentialsAndNamesActuallyWork(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 1, map[string]string{"app": "executor-local"}).
-		withDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
-	server := api.start()
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 1, map[string]string{"app": "executor-local"}).
+		WithDeployment("executor-cloud", 0, map[string]string{"app": "executor-cloud"})
+	server := api.Start()
 
 	if err := kubernetes.New().Validate(context.Background(), targetFor(server.URL, nil)); err != nil {
 		t.Errorf("Validate() = %v, want nil", err)
@@ -291,8 +292,8 @@ func TestValidateProvesTheCredentialsAndNamesActuallyWork(t *testing.T) {
 }
 
 func TestValidateRejectsATargetWhoseDeploymentDoesNotExist(t *testing.T) {
-	api := newFakeAPI(t).withDeployment("executor-local", 1, map[string]string{"app": "executor-local"})
-	server := api.start()
+	api := kubetest.New(t).WithDeployment("executor-local", 1, map[string]string{"app": "executor-local"})
+	server := api.Start()
 
 	err := kubernetes.New().Validate(context.Background(), targetFor(server.URL, nil))
 	if err == nil || !strings.Contains(err.Error(), "executor-cloud") {
@@ -314,8 +315,8 @@ func TestValidateRejectsATargetMissingRequiredSettings(t *testing.T) {
 }
 
 func TestApplyRefusesANegativeReplicaCount(t *testing.T) {
-	api := newFakeAPI(t).withDeployment("executor-local", 1, map[string]string{"app": "executor-local"})
-	server := api.start()
+	api := kubetest.New(t).WithDeployment("executor-local", 1, map[string]string{"app": "executor-local"})
+	server := api.Start()
 
 	_, err := kubernetes.New().Apply(context.Background(), targetFor(server.URL, nil),
 		domain.Plan{LocalExecutors: -1})

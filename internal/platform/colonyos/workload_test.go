@@ -8,6 +8,7 @@ import (
 
 	"github.com/casperlundberg/autoscaler/internal/domain"
 	"github.com/casperlundberg/autoscaler/internal/platform/colonyos"
+	"github.com/casperlundberg/autoscaler/internal/platform/colonyos/colonytest"
 )
 
 var now = time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -25,9 +26,9 @@ func ago(d time.Duration) time.Time { return now.Add(-d) }
 
 func TestQueuesAreGroupedByPriority(t *testing.T) {
 	waiting := []colonyos.Process{
-		process("a", 100, ago(time.Minute), "bemis", nil),
-		process("b", 100, ago(2*time.Minute), "bemis", nil),
-		process("c", 25, ago(time.Minute), "bemis", nil),
+		colonytest.Job("a", 100, ago(time.Minute), "bemis", nil),
+		colonytest.Job("b", 100, ago(2*time.Minute), "bemis", nil),
+		colonytest.Job("c", 25, ago(time.Minute), "bemis", nil),
 	}
 
 	got, err := colonyos.BuildWorkload(waiting, nil, options())
@@ -45,8 +46,8 @@ func TestQueuesAreGroupedByPriority(t *testing.T) {
 
 func TestTheOldestWaitingJobSetsTheLevelsAge(t *testing.T) {
 	waiting := []colonyos.Process{
-		process("young", 100, ago(30*time.Second), "bemis", nil),
-		process("old", 100, ago(9*time.Minute), "bemis", nil),
+		colonytest.Job("young", 100, ago(30*time.Second), "bemis", nil),
+		colonytest.Job("old", 100, ago(9*time.Minute), "bemis", nil),
 	}
 
 	got, err := colonyos.BuildWorkload(waiting, nil, options())
@@ -62,7 +63,7 @@ func TestTheOldestWaitingJobSetsTheLevelsAge(t *testing.T) {
 // Clocks between a scheduler and this service do drift. A negative age would
 // read as a job from the future and quietly suppress a real breach.
 func TestAJobSubmittedInTheFutureAgesToZeroNotNegative(t *testing.T) {
-	waiting := []colonyos.Process{process("skewed", 100, now.Add(time.Minute), "bemis", nil)}
+	waiting := []colonyos.Process{colonytest.Job("skewed", 100, now.Add(time.Minute), "bemis", nil)}
 
 	got, err := colonyos.BuildWorkload(waiting, nil, options())
 	if err != nil {
@@ -76,9 +77,9 @@ func TestAJobSubmittedInTheFutureAgesToZeroNotNegative(t *testing.T) {
 
 func TestArrivalRateCountsOnlyWhatArrivedInsideTheWindow(t *testing.T) {
 	waiting := []colonyos.Process{
-		process("recent-1", 100, ago(time.Minute), "bemis", nil),
-		process("recent-2", 100, ago(5*time.Minute), "bemis", nil),
-		process("ancient", 100, ago(2*time.Hour), "bemis", nil),
+		colonytest.Job("recent-1", 100, ago(time.Minute), "bemis", nil),
+		colonytest.Job("recent-2", 100, ago(5*time.Minute), "bemis", nil),
+		colonytest.Job("ancient", 100, ago(2*time.Hour), "bemis", nil),
 	}
 
 	got, err := colonyos.BuildWorkload(waiting, nil, options())
@@ -98,7 +99,7 @@ func TestArrivalRateCountsOnlyWhatArrivedInsideTheWindow(t *testing.T) {
 // work at all, and scale it down mid-flow.
 func TestRunningWorkCountsTowardsTheArrivalRate(t *testing.T) {
 	running := []colonyos.Process{
-		process("started", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "20"}),
+		colonytest.Job("started", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "20"}),
 	}
 
 	got, err := colonyos.BuildWorkload(nil, running, options())
@@ -116,8 +117,8 @@ func TestRunningWorkCountsTowardsTheArrivalRate(t *testing.T) {
 
 func TestThroughputComesFromTheExecutionTimeOfRunningWork(t *testing.T) {
 	running := []colonyos.Process{
-		process("a", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "10"}),
-		process("b", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "30"}),
+		colonytest.Job("a", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "10"}),
+		colonytest.Job("b", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "30"}),
 	}
 
 	got, err := colonyos.BuildWorkload(nil, running, options())
@@ -133,7 +134,7 @@ func TestThroughputComesFromTheExecutionTimeOfRunningWork(t *testing.T) {
 
 func TestWithNothingRunningTheWaitingWorkEstimatesThroughput(t *testing.T) {
 	waiting := []colonyos.Process{
-		process("a", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "40"}),
+		colonytest.Job("a", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "40"}),
 	}
 
 	got, err := colonyos.BuildWorkload(waiting, nil, options())
@@ -147,7 +148,7 @@ func TestWithNothingRunningTheWaitingWorkEstimatesThroughput(t *testing.T) {
 }
 
 func TestWithNoDeclaredExecutionTimesTheConfiguredDefaultIsUsed(t *testing.T) {
-	waiting := []colonyos.Process{process("a", 100, ago(time.Minute), "bemis", nil)}
+	waiting := []colonyos.Process{colonytest.Job("a", 100, ago(time.Minute), "bemis", nil)}
 
 	got, err := colonyos.BuildWorkload(waiting, nil, options())
 	if err != nil {
@@ -164,7 +165,7 @@ func TestWithNoDeclaredExecutionTimesTheConfiguredDefaultIsUsed(t *testing.T) {
 // process is named so the submitter can be found.
 func TestAnUnreadableExecutionTimeIsAnErrorNamingTheProcess(t *testing.T) {
 	waiting := []colonyos.Process{
-		process("bad-one", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "quickly"}),
+		colonytest.Job("bad-one", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "quickly"}),
 	}
 
 	_, err := colonyos.BuildWorkload(waiting, nil, options())
@@ -178,7 +179,7 @@ func TestAnUnreadableExecutionTimeIsAnErrorNamingTheProcess(t *testing.T) {
 
 func TestAnExecutionTimeOfZeroIsRefused(t *testing.T) {
 	waiting := []colonyos.Process{
-		process("instant", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "0"}),
+		colonytest.Job("instant", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "0"}),
 	}
 
 	if _, err := colonyos.BuildWorkload(waiting, nil, options()); err == nil {
@@ -205,8 +206,8 @@ func TestAnEmptyColonyProducesAnEmptyQueueAndAUsableThroughput(t *testing.T) {
 
 func TestTheResultIsAValidObservationForTheEngine(t *testing.T) {
 	waiting := []colonyos.Process{
-		process("a", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "15"}),
-		process("b", 25, ago(time.Hour), "bemis", nil),
+		colonytest.Job("a", 100, ago(time.Minute), "bemis", map[string]string{"exec_seconds": "15"}),
+		colonytest.Job("b", 25, ago(time.Hour), "bemis", nil),
 	}
 
 	workload, err := colonyos.BuildWorkload(waiting, nil, options())

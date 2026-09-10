@@ -1,4 +1,12 @@
-package colonyos_test
+// Package colonytest is a stand-in for a ColonyOS server that authenticates
+// for real: it recovers the caller's identity from the request signature
+// exactly as ColonyOS does. A test that passed against a server which ignored
+// signatures would prove nothing about talking to one that does not.
+//
+// It lives in its own package because both ColonyOS adapters — executors as
+// pods and executors as containers — read their queue the same way and both
+// deserve testing against it.
+package colonytest
 
 import (
 	"encoding/base64"
@@ -11,42 +19,44 @@ import (
 	"github.com/casperlundberg/autoscaler/internal/platform/colonyos"
 )
 
-// fakeColonies speaks the real RPC envelope and, importantly, authenticates
+// Server speaks the real RPC envelope and, importantly, authenticates
 // for real: it recovers the caller's identity from the signature exactly as a
 // ColonyOS server does. A test that passed against a server which ignored
 // signatures would prove nothing about whether this client can talk to one
 // that does not.
-type fakeColonies struct {
+type Server struct {
 	t *testing.T
 
-	colonyName string
+	ColonyName string
 	members    map[string]bool
 
-	waiting []colonyos.Process
-	running []colonyos.Process
+	Waiting []colonyos.Process
+	Running []colonyos.Process
 
-	// lastRequest records the decoded payload of the most recent call, so a
+	// LastRequest records the decoded payload of the most recent call, so a
 	// test can assert on what was actually asked for.
-	lastRequest map[string]any
+	LastRequest map[string]any
 
-	failWith string
+	FailWith string
 }
 
-func newFakeColonies(t *testing.T, memberID string) *fakeColonies {
-	return &fakeColonies{
+func New(t *testing.T, memberID string) *Server {
+	return &Server{
 		t:          t,
-		colonyName: "dev",
+		ColonyName: "dev",
 		members:    map[string]bool{memberID: true},
 	}
 }
 
-func (f *fakeColonies) start() *httptest.Server {
-	server := httptest.NewServer(http.HandlerFunc(f.serve))
+// Start runs the server and registers its shutdown with the test.
+func (f *Server) Start() *httptest.Server {
+	server := httptest.NewServer(http.HandlerFunc(f.Serve))
 	f.t.Cleanup(server.Close)
 	return server
 }
 
-func (f *fakeColonies) serve(w http.ResponseWriter, r *http.Request) {
+// Serve handles one RPC request.
+func (f *Server) Serve(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/api" {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -78,10 +88,10 @@ func (f *fakeColonies) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "payload is not JSON", http.StatusBadRequest)
 		return
 	}
-	f.lastRequest = request
+	f.LastRequest = request
 
-	if f.failWith != "" {
-		f.reply(w, true, `{"status":500,"message":"`+f.failWith+`"}`)
+	if f.FailWith != "" {
+		f.reply(w, true, `{"status":500,"message":"`+f.FailWith+`"}`)
 		return
 	}
 
@@ -89,16 +99,16 @@ func (f *fakeColonies) serve(w http.ResponseWriter, r *http.Request) {
 	case "getprocessesmsg":
 		f.replyProcesses(w, request)
 	case "getcolonymsg":
-		f.reply(w, false, `{"name":"`+f.colonyName+`"}`)
+		f.reply(w, false, `{"name":"`+f.ColonyName+`"}`)
 	default:
 		f.reply(w, true, `{"status":400,"message":"unknown payload type"}`)
 	}
 }
 
-func (f *fakeColonies) replyProcesses(w http.ResponseWriter, request map[string]any) {
-	source := f.waiting
+func (f *Server) replyProcesses(w http.ResponseWriter, request map[string]any) {
+	source := f.Waiting
 	if state, _ := request["state"].(float64); int(state) == colonyos.StateRunning {
-		source = f.running
+		source = f.Running
 	}
 
 	wanted, _ := request["executortype"].(string)
@@ -116,7 +126,7 @@ func (f *fakeColonies) replyProcesses(w http.ResponseWriter, request map[string]
 	f.reply(w, false, string(encoded))
 }
 
-func (f *fakeColonies) reply(w http.ResponseWriter, isError bool, payload string) {
+func (f *Server) reply(w http.ResponseWriter, isError bool, payload string) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"payloadtype": "reply",
@@ -144,7 +154,8 @@ func toWire(processes []colonyos.Process) []map[string]any {
 	return out
 }
 
-func process(id string, priority int, submittedAt time.Time, executorType string,
+// Job builds a process for a fixture.
+func Job(id string, priority int, submittedAt time.Time, executorType string,
 	env map[string]string) colonyos.Process {
 	return colonyos.Process{
 		ID: id, Priority: priority, SubmittedAt: submittedAt,

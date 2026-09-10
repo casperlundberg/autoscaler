@@ -13,16 +13,17 @@ import (
 
 	"github.com/casperlundberg/autoscaler/internal/platform"
 	"github.com/casperlundberg/autoscaler/internal/platform/kubernetes"
+	"github.com/casperlundberg/autoscaler/internal/platform/kubernetes/kubetest"
 )
 
 // inCluster stands up a TLS API server with its own CA and a service account
 // directory laid out exactly as Kubernetes mounts one, so the in-cluster path
 // is exercised end to end: reading the mounted files, trusting the cluster CA,
 // and finding the API server through the environment.
-func inCluster(t *testing.T, api *fakeAPI, files map[string]string) (*kubernetes.Adapter, func(string) string) {
+func inCluster(t *testing.T, api *kubetest.Server, files map[string]string) (*kubernetes.Adapter, func(string) string) {
 	t.Helper()
 
-	server := httptest.NewTLSServer(http.HandlerFunc(api.serve))
+	server := httptest.NewTLSServer(http.HandlerFunc(api.Serve))
 	t.Cleanup(server.Close)
 
 	caPEM := pem.EncodeToMemory(&pem.Block{
@@ -33,7 +34,7 @@ func inCluster(t *testing.T, api *fakeAPI, files map[string]string) (*kubernetes
 	// mount this file at all", which is how a broken mount is simulated.
 	dir := t.TempDir()
 	mounted := map[string]string{
-		"token":     api.token,
+		"token":     api.Token,
 		"ca.crt":    string(caPEM),
 		"namespace": "mining",
 	}
@@ -80,9 +81,9 @@ func inClusterTarget() platform.Target {
 }
 
 func TestTheAdapterCanRunOnTheClusterItScales(t *testing.T) {
-	api := newFakeAPI(t).
-		withDeployment("executor-local", 3, map[string]string{"app": "executor-local"}).
-		withPods(map[string]string{"app": "executor-local"}, 3, 0)
+	api := kubetest.New(t).
+		WithDeployment("executor-local", 3, map[string]string{"app": "executor-local"}).
+		WithPods(map[string]string{"app": "executor-local"}, 3, 0)
 	adapter, _ := inCluster(t, api, nil)
 
 	got, err := adapter.Observe(context.Background(), inClusterTarget())
@@ -95,7 +96,7 @@ func TestTheAdapterCanRunOnTheClusterItScales(t *testing.T) {
 }
 
 func TestInClusterNeedsNoBearerTokenInTheTarget(t *testing.T) {
-	api := newFakeAPI(t).withDeployment("executor-local", 1, map[string]string{"app": "executor-local"})
+	api := kubetest.New(t).WithDeployment("executor-local", 1, map[string]string{"app": "executor-local"})
 	adapter, _ := inCluster(t, api, nil)
 
 	// The whole point: the operator grants a Role instead of storing a token
@@ -106,7 +107,7 @@ func TestInClusterNeedsNoBearerTokenInTheTarget(t *testing.T) {
 }
 
 func TestAMissingServiceAccountTokenFailsLoudlyWithThePath(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 	adapter, _ := inCluster(t, api, map[string]string{"token": ""})
 
 	_, err := adapter.Observe(context.Background(), inClusterTarget())
@@ -121,7 +122,7 @@ func TestAMissingServiceAccountTokenFailsLoudlyWithThePath(t *testing.T) {
 }
 
 func TestWithoutTheKubernetesEnvironmentTheAPIServerCannotBeFound(t *testing.T) {
-	api := newFakeAPI(t)
+	api := kubetest.New(t)
 	dir := t.TempDir()
 	for name, content := range map[string]string{"token": "t", "ca.crt": "", "namespace": "mining"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {

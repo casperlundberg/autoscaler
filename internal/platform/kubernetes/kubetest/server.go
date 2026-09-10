@@ -1,4 +1,12 @@
-package kubernetes_test
+// Package kubetest is a stand-in for the Kubernetes API server, good enough
+// that a test against it exercises real request building, real label
+// selectors, real JSON decoding and real error handling.
+//
+// It lives in its own package rather than in a _test.go file because more than
+// one adapter provisions through Kubernetes, and each of them deserves to be
+// tested against a server that behaves like the real one rather than against a
+// mock of the client that talks to it.
+package kubetest
 
 import (
 	"encoding/base64"
@@ -11,29 +19,29 @@ import (
 	"testing"
 )
 
-// fakeAPI is a small but honest stand-in for the Kubernetes API server: it
+// Server is a small but honest stand-in for the Kubernetes API server: it
 // speaks the real paths, the real JSON shapes and the real status codes.
 // Testing the adapter against it exercises the request building, the label
 // selector, the JSON decoding and the error handling — everything a mocked
 // client would have quietly skipped.
-type fakeAPI struct {
+type Server struct {
 	mu sync.Mutex
 	t  *testing.T
 
-	token       string
-	deployments map[string]*fakeDeployment
-	pods        []fakePod
+	Token       string
+	deployments map[string]*deployment
+	pods        []pod
 
 	// requests records what the adapter actually sent, so a test can assert
 	// on the wire and not only on the outcome.
 	requests []string
 
-	// failNextPatch makes the next scale request fail, to check that a
+	// FailNextPatch makes the next scale request fail, to check that a
 	// rejected apply is reported rather than assumed to have worked.
-	failNextPatch bool
+	FailNextPatch bool
 
-	// failNextCreate does the same for a Deployment creation.
-	failNextCreate bool
+	// FailNextCreate does the same for a Deployment creation.
+	FailNextCreate bool
 
 	// created records the raw body of each posted Deployment, so a test can
 	// assert on the pod spec that was actually sent.
@@ -43,42 +51,42 @@ type fakeAPI struct {
 	secrets map[string]map[string]string
 }
 
-type fakeDeployment struct {
+type deployment struct {
 	replicas int
 	selector map[string]string
 }
 
-type fakePod struct {
+type pod struct {
 	labels      map[string]string
 	ready       bool
 	terminating bool
 }
 
-func newFakeAPI(t *testing.T) *fakeAPI {
-	return &fakeAPI{
-		t: t, token: "test-token",
-		deployments: map[string]*fakeDeployment{},
+func New(t *testing.T) *Server {
+	return &Server{
+		t: t, Token: "test-token",
+		deployments: map[string]*deployment{},
 		created:     map[string]string{},
 		secrets:     map[string]map[string]string{},
 	}
 }
 
-func (f *fakeAPI) withDeployment(name string, replicas int, selector map[string]string) *fakeAPI {
-	f.deployments[name] = &fakeDeployment{replicas: replicas, selector: selector}
+func (f *Server) WithDeployment(name string, replicas int, selector map[string]string) *Server {
+	f.deployments[name] = &deployment{replicas: replicas, selector: selector}
 	return f
 }
 
-func (f *fakeAPI) withPods(labels map[string]string, ready, pending int) *fakeAPI {
+func (f *Server) WithPods(labels map[string]string, ready, pending int) *Server {
 	for i := 0; i < ready; i++ {
-		f.pods = append(f.pods, fakePod{labels: labels, ready: true})
+		f.pods = append(f.pods, pod{labels: labels, ready: true})
 	}
 	for i := 0; i < pending; i++ {
-		f.pods = append(f.pods, fakePod{labels: labels, ready: false})
+		f.pods = append(f.pods, pod{labels: labels, ready: false})
 	}
 	return f
 }
 
-func (f *fakeAPI) replicas(name string) int {
+func (f *Server) Replicas(name string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if d, ok := f.deployments[name]; ok {
@@ -87,21 +95,21 @@ func (f *fakeAPI) replicas(name string) int {
 	return -1
 }
 
-// createdDeployment is the body posted for a Deployment, if one was.
-func (f *fakeAPI) createdDeployment(name string) string {
+// CreatedDeployment is the body posted for a Deployment, if one was.
+func (f *Server) CreatedDeployment(name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.created[name]
 }
 
-// secretValue reads back a stored Secret entry.
-func (f *fakeAPI) secretValue(name, key string) string {
+// SecretValue reads back a stored Secret entry.
+func (f *Server) SecretValue(name, key string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.secrets[name][key]
 }
 
-func (f *fakeAPI) sawRequest(substring string) bool {
+func (f *Server) SawRequest(substring string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, r := range f.requests {
@@ -112,18 +120,21 @@ func (f *fakeAPI) sawRequest(substring string) bool {
 	return false
 }
 
-func (f *fakeAPI) start() *httptest.Server {
-	server := httptest.NewServer(http.HandlerFunc(f.serve))
+// Start runs the server and registers its shutdown with the test.
+func (f *Server) Start() *httptest.Server {
+	server := httptest.NewServer(http.HandlerFunc(f.Serve))
 	f.t.Cleanup(server.Close)
 	return server
 }
 
-func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
+// Serve handles one request. Exported so a caller can wrap it in a TLS
+// server, which is how the in-cluster credential path is tested.
+func (f *Server) Serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.RequestURI())
 	f.mu.Unlock()
 
-	if got := r.Header.Get("Authorization"); got != "Bearer "+f.token {
+	if got := r.Header.Get("Authorization"); got != "Bearer "+f.Token {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
@@ -146,7 +157,7 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeAPI) serveDeployment(w http.ResponseWriter, r *http.Request) {
+func (f *Server) serveDeployment(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -165,12 +176,12 @@ func (f *fakeAPI) serveDeployment(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (f *fakeAPI) serveScale(w http.ResponseWriter, r *http.Request) {
+func (f *Server) serveScale(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.failNextPatch {
-		f.failNextPatch = false
+	if f.FailNextPatch {
+		f.FailNextPatch = false
 		writeStatus(w, http.StatusForbidden, "deployments.apps is forbidden")
 		return
 	}
@@ -199,7 +210,7 @@ func (f *fakeAPI) serveScale(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (f *fakeAPI) servePods(w http.ResponseWriter, r *http.Request) {
+func (f *Server) servePods(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -272,12 +283,12 @@ func writeStatus(w http.ResponseWriter, code int, message string) {
 	})
 }
 
-func (f *fakeAPI) serveCreateDeployment(w http.ResponseWriter, r *http.Request) {
+func (f *Server) serveCreateDeployment(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.failNextCreate {
-		f.failNextCreate = false
+	if f.FailNextCreate {
+		f.FailNextCreate = false
 		writeStatus(w, http.StatusForbidden, "deployments.apps is forbidden")
 		return
 	}
@@ -312,7 +323,7 @@ func (f *fakeAPI) serveCreateDeployment(w http.ResponseWriter, r *http.Request) 
 	if posted.Spec.Replicas != nil {
 		replicas = *posted.Spec.Replicas
 	}
-	f.deployments[posted.Metadata.Name] = &fakeDeployment{
+	f.deployments[posted.Metadata.Name] = &deployment{
 		replicas: replicas, selector: posted.Spec.Selector.MatchLabels,
 	}
 	f.created[posted.Metadata.Name] = string(raw)
@@ -321,7 +332,7 @@ func (f *fakeAPI) serveCreateDeployment(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]any{"metadata": map[string]any{"name": posted.Metadata.Name}})
 }
 
-func (f *fakeAPI) serveCreateSecret(w http.ResponseWriter, r *http.Request) {
+func (f *Server) serveCreateSecret(w http.ResponseWriter, r *http.Request) {
 	name, data, ok := decodeSecret(w, r)
 	if !ok {
 		return
@@ -339,7 +350,7 @@ func (f *fakeAPI) serveCreateSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"metadata": map[string]any{"name": name}})
 }
 
-func (f *fakeAPI) serveReplaceSecret(w http.ResponseWriter, r *http.Request) {
+func (f *Server) serveReplaceSecret(w http.ResponseWriter, r *http.Request) {
 	name, data, ok := decodeSecret(w, r)
 	if !ok {
 		return
