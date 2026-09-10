@@ -1,0 +1,16 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+
+# Local environment
+.env
+.env.local
+*.local.yaml
+
+# Credentials must never be committed. The autoscaler takes access keys
+# through its API, not through files in this repo.
+*.pem
+*.key
+kubeconfig
