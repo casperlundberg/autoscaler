@@ -1,0 +1,742 @@
+openapi: 3.1.0
+info:
+  title: Autoscaler
+  version: "1.0.0"
+  description: |
+    A scaling controller for priority-aware batch workloads.
+
+    Two ideas run through the whole API. First, a **target** is one scalable
+    workload: which platform it is on, the access keys to act on it, and the
+    settings it runs under. Second, **settings change at runtime** — a write to
+    `/v1/targets/{id}/settings` is in force on that target's next decision
+    cycle, with nothing restarted and nothing reloaded.
+
+    Durations are seconds throughout. These values are read by people in a run
+    log and typed by hand into requests.
+
+servers:
+  - url: /
+    description: The service itself, usually behind an ingress in the same namespace.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: platforms
+    description: What kinds of infrastructure this build can scale.
+  - name: targets
+    description: Registering and inspecting scalable workloads.
+  - name: settings
+    description: Changing policy while the service runs.
+  - name: cycles
+    description: Driving a decision, and reading the last one.
+
+paths:
+  /healthz:
+    get:
+      tags: [platforms]
+      summary: Liveness probe
+      description: Unauthenticated, because a kubelet cannot carry a credential.
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /readyz:
+    get:
+      tags: [platforms]
+      summary: Readiness probe
+      security: []
+      responses:
+        "200":
+          description: The process is ready to serve.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /v1/platforms:
+    get:
+      tags: [platforms]
+      summary: List the platforms this build supports
+      description: |
+        Each entry describes every configuration and credential field the
+        platform needs, well enough for a client to render a registration form
+        for a platform it was never specifically written for.
+      responses:
+        "200":
+          description: The registered platforms.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  platforms:
+                    type: array
+                    items: { $ref: "#/components/schemas/PlatformSchema" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/settings/defaults:
+    get:
+      tags: [settings]
+      summary: The shipped default settings
+      description: |
+        Useful as the starting point for a new target's settings form. A target
+        created without settings gets exactly this document.
+      responses:
+        "200":
+          description: The defaults.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/targets:
+    get:
+      tags: [targets]
+      summary: List registered targets
+      responses:
+        "200":
+          description: Every target, ordered by id.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  targets:
+                    type: array
+                    items: { $ref: "#/components/schemas/TargetSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [targets]
+      summary: Register a target
+      description: |
+        The target's access keys are validated against the platform before it
+        is accepted, so a mistyped Deployment name or an expired token is
+        refused while someone is looking at the response — not discovered
+        during the first burst it was supposed to absorb.
+
+        `settings` is optional and is applied as a patch onto the defaults, so
+        a caller states only the numbers it cares about.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TargetRequest" }
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TargetSnapshot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: A target with this id already exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/targets/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TargetID"
+    get:
+      tags: [targets]
+      summary: Fetch one target
+      responses:
+        "200":
+          description: The target.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TargetSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [targets]
+      summary: Replace a target's platform configuration
+      description: |
+        Keeps the target's settings and its stored credentials. Credentials
+        submitted in the redacted form this API returns mean "leave them
+        alone", so reading a target, changing one field and sending it back is
+        safe. A credential sent as a string replaces the stored one; an empty
+        string clears it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TargetRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TargetSnapshot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [targets]
+      summary: Remove a target
+      description: |
+        Stops scaling it. Capacity already provisioned is left exactly as it
+        is — tearing down a mine's executors because someone tidied up a
+        registry entry would be a much worse default than leaving them running.
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/targets/{id}/settings:
+    parameters:
+      - $ref: "#/components/parameters/TargetID"
+    get:
+      tags: [settings]
+      summary: The settings a target is running under
+      responses:
+        "200":
+          description: The current settings version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettingsSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [settings]
+      summary: Change settings while the service runs
+      description: |
+        The body is applied onto the current document, so a partial body
+        changes only what it mentions. The result is validated as a whole
+        before it becomes current: a rejected write leaves the running engine
+        on exactly the settings it already had.
+
+        Pass `expected_version` to make the write a compare-and-swap, so two
+        people tuning the same target cannot silently overwrite each other.
+
+        The change is in force on the target's next decision cycle.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedVersion"
+        - $ref: "#/components/parameters/Actor"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200":
+          description: Applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettingsSnapshot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The settings changed since the version the caller edited.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      tags: [settings]
+      summary: Replace settings
+      description: Identical to PATCH; a full document simply mentions every field.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedVersion"
+        - $ref: "#/components/parameters/Actor"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200":
+          description: Applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettingsSnapshot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The settings changed since the version the caller edited.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/targets/{id}/settings/history:
+    parameters:
+      - $ref: "#/components/parameters/TargetID"
+      - name: limit
+        in: query
+        schema: { type: integer, default: 50 }
+    get:
+      tags: [settings]
+      summary: What has been changed, by whom, and from what
+      responses:
+        "200":
+          description: Accepted changes, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changes:
+                    type: array
+                    items: { $ref: "#/components/schemas/SettingsChange" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/targets/{id}/cycle:
+    parameters:
+      - $ref: "#/components/parameters/TargetID"
+    post:
+      tags: [cycles]
+      summary: Run one decision cycle
+      description: |
+        Observe, decide, and enact — one cycle, synchronously.
+
+        This is the endpoint a simulation replays through. A driven target
+        supplies the queue with the request and passes `at` as the run's own
+        clock, so a two-day workload can be replayed in minutes and every
+        cooldown and coldstart still behaves correctly.
+
+        A supplied `workload` is honoured only for a target in `driven` mode.
+        An autonomous target always decides from what its platform actually
+        reports, so a mistaken caller cannot scale live infrastructure against
+        a queue that does not exist.
+
+        Capacity always comes from the platform, never from the caller.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CycleRequest" }
+      responses:
+        "200":
+          description: The decision, what was observed, and what was applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CycleResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/targets/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/TargetID"
+    get:
+      tags: [cycles]
+      summary: The last cycle's outcome
+      description: |
+        `last_error` is cleared by any cycle that works, so what is shown is a
+        problem still happening rather than one that happened once.
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TargetStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Required on every endpoint except the probes. This service holds
+        Kubernetes tokens, ColonyOS private keys and Docker client
+        certificates.
+
+  parameters:
+    TargetID:
+      name: id
+      in: path
+      required: true
+      description: |
+        The target's id. It becomes part of Deployment, container and Secret
+        names on the platform below, so it must be 1-63 characters of lowercase
+        letters, digits and hyphens, starting and ending with a letter or digit.
+      schema:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+        example: storhall
+    ExpectedVersion:
+      name: expected_version
+      in: query
+      required: false
+      description: The settings version this write is based on. Makes the write a compare-and-swap.
+      schema: { type: integer, format: int64 }
+    Actor:
+      name: X-Autoscaler-Actor
+      in: header
+      required: false
+      description: |
+        Who to record against the change. A label for the audit log, never a
+        permission — this service sits behind something that authenticates
+        people.
+      schema: { type: string, example: "operator@example.org" }
+
+  responses:
+    BadRequest:
+      description: The request cannot be carried out, with the reason given.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or wrong bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No such target.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: A human-readable explanation, safe to show to an operator.
+      required: [error]
+
+    PlatformSchema:
+      type: object
+      description: What a platform needs in order to be driven.
+      properties:
+        kind:
+          type: string
+          enum: [simulation, kubernetes, colonyos-k8s, colonyos-container]
+        summary: { type: string }
+        sees_workload:
+          type: boolean
+          description: |
+            Whether this platform can see its own queue. When false, a target
+            on it must be `driven`: the workload arrives with each request.
+        config:
+          type: array
+          items: { $ref: "#/components/schemas/PlatformField" }
+        credentials:
+          type: array
+          description: Secret fields. Rendered as password inputs, never echoed back.
+          items: { $ref: "#/components/schemas/PlatformField" }
+      required: [kind, summary, sees_workload]
+
+    PlatformField:
+      type: object
+      properties:
+        name: { type: string }
+        label: { type: string }
+        description: { type: string }
+        default: { type: string }
+        example: { type: string }
+        required: { type: boolean }
+      required: [name, label, required]
+
+    Target:
+      type: object
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+        name: { type: string }
+        kind:
+          type: string
+          enum: [simulation, kubernetes, colonyos-k8s, colonyos-container]
+        mode:
+          type: string
+          enum: [autonomous, driven]
+          default: driven
+          description: |
+            `autonomous` means this service polls the platform and provisions on
+            its own schedule; `driven` means a caller supplies the observation
+            and asks for a decision. The default is driven, so a newly
+            registered target does not start creating capacity before anybody
+            has said it should. A platform whose `sees_workload` is false
+            cannot be autonomous.
+        config:
+          type: object
+          additionalProperties: { type: string }
+          description: Non-secret platform settings, as declared by that platform's schema.
+        credentials:
+          oneOf:
+            - type: object
+              additionalProperties: { type: string }
+              description: On the way in — real values.
+            - type: object
+              additionalProperties: { $ref: "#/components/schemas/RedactedCredential" }
+              description: On the way out — never real values.
+      required: [id, kind]
+
+    RedactedCredential:
+      type: object
+      description: |
+        What a credential looks like in a response. Sending this back means
+        "leave the stored value alone".
+      properties:
+        present: { type: boolean }
+        fingerprint:
+          type: string
+          description: A SHA-256 prefix, enough to tell whether a key changed.
+          example: "sha256:039231c7644e"
+
+    TargetRequest:
+      type: object
+      properties:
+        target: { $ref: "#/components/schemas/Target" }
+        settings:
+          $ref: "#/components/schemas/Settings"
+      required: [target]
+
+    TargetSnapshot:
+      type: object
+      properties:
+        target: { $ref: "#/components/schemas/Target" }
+        settings: { $ref: "#/components/schemas/SettingsSnapshotInline" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        last_decision: { $ref: "#/components/schemas/Decision" }
+        last_error: { type: string }
+        last_cycle_at: { type: string, format: date-time }
+
+    Settings:
+      type: object
+      description: |
+        Every number a decision depends on. Any subset may be sent; whatever is
+        not mentioned keeps its current value.
+      properties:
+        decision_interval_seconds:
+          type: number
+          description: How often an autonomous target decides.
+        horizon_seconds:
+          type: number
+          description: |
+            How far ahead the queue is simulated. Must be at least the decision
+            interval, and should exceed the slowest coldstart — otherwise a
+            breach is never visible far enough ahead for new executors to
+            arrive before it happens.
+        simulation_step_seconds:
+          type: number
+          description: The resolution of that simulation.
+        deadline_seconds_by_priority:
+          type: object
+          additionalProperties: { type: number }
+          description: |
+            The SLA per priority level. Sending this replaces the whole map;
+            omitting it leaves it alone.
+          example: { "400": 30, "100": 60, "50": 300, "25": 43200, "0": 86400 }
+        default_deadline_seconds:
+          type: number
+          description: For a priority level that has not been configured.
+        local_executor_cap:
+          type: integer
+          description: A physical limit — asking for more produces pods that never schedule.
+        cloud_executor_cap:
+          type: integer
+          description: A spend ceiling, enforced identically.
+        min_local_executors:
+          type: integer
+          description: |
+            Held even with an empty queue: a warm executor answers instantly,
+            while an empty pool makes the next job pay a full coldstart.
+        local_coldstart_seconds: { type: number }
+        cloud_coldstart_seconds: { type: number }
+        scale_up_cooldown_seconds:
+          type: number
+          description: |
+            Usually zero. A growing queue costs SLA breaches immediately.
+        scale_down_cooldown_seconds:
+          type: number
+          description: |
+            Usually minutes. A drained queue costs only idle executors, and
+            reclaiming them too eagerly means paying coldstart again shortly.
+        max_scale_up_step: { type: integer, minimum: 1 }
+        max_scale_down_step: { type: integer, minimum: 1 }
+        cloud_min_lifetime_seconds:
+          type: number
+          description: |
+            Cloud capacity is billed from the moment it is requested, so it is
+            held at least this long rather than churned through a brief lull.
+        safety_factor:
+          type: number
+          minimum: 1
+          description: Headroom on the requirement, covering error in the throughput estimate.
+        dry_run:
+          type: boolean
+          description: |
+            Decisions are computed and recorded but never applied. How a real
+            target is introduced to production.
+
+    SettingsSnapshot:
+      type: object
+      properties:
+        version: { type: integer, format: int64 }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+        settings: { $ref: "#/components/schemas/Settings" }
+        warnings:
+          type: array
+          items: { type: string }
+          description: |
+            Legal settings that are probably not what was meant — a horizon
+            shorter than the coldstart it has to see past, both caps at zero,
+            dry run left on. Returned rather than refused.
+
+    SettingsSnapshotInline:
+      type: object
+      properties:
+        version: { type: integer, format: int64 }
+        settings: { $ref: "#/components/schemas/Settings" }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+
+    SettingsChange:
+      type: object
+      properties:
+        version: { type: integer, format: int64 }
+        at: { type: string, format: date-time }
+        actor: { type: string }
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              from: { type: string }
+              to: { type: string }
+
+    QueueInfo:
+      type: object
+      description: One priority level's aggregate state.
+      properties:
+        depth: { type: integer }
+        oldest_job_age_seconds:
+          type: number
+          description: How long the oldest waiting job has waited.
+        arrival_rate_per_second: { type: number }
+
+    Workload:
+      type: object
+      properties:
+        queues:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/QueueInfo" }
+          description: Keyed by priority level. Higher is more urgent.
+        executor_throughput_per_second:
+          type: number
+          description: |
+            Jobs one executor completes per second. This is the term that turns
+            a queue length into an executor count, so it must be positive.
+      required: [executor_throughput_per_second]
+
+    Capacity:
+      type: object
+      properties:
+        local_ready: { type: integer }
+        cloud_ready: { type: integer }
+        local_pending:
+          type: integer
+          description: Requested and still starting — a commitment, but not throughput yet.
+        cloud_pending: { type: integer }
+
+    Plan:
+      type: object
+      description: |
+        Absolute counts, never deltas. Applying the same plan twice is the same
+        as applying it once.
+      properties:
+        local_executors: { type: integer }
+        cloud_executors: { type: integer }
+
+    Projection:
+      type: object
+      description: What the forward simulation predicted under the chosen plan.
+      properties:
+        breach_expected: { type: boolean }
+        first_breach_priority: { type: integer }
+        first_breach_in_seconds: { type: number }
+        peak_queue_depth: { type: integer }
+        drained_at_seconds:
+          type: number
+          description: When the queue clears, or absent if it does not within the horizon.
+
+    Decision:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        previous: { $ref: "#/components/schemas/Plan" }
+        plan: { $ref: "#/components/schemas/Plan" }
+        action:
+          type: string
+          enum: [maintain, scale_up, scale_down, cloud_burst, cloud_release, rebalance]
+        reason:
+          type: string
+          description: |
+            Written in the numbers an operator can check for themselves.
+          example: "P100 breaches in 15s at the current 0 executors; 6 needed (minimum 5 plus 1.15x safety) for 400 jobs waiting, 2.00/s arriving"
+        projection: { $ref: "#/components/schemas/Projection" }
+        settings_version:
+          type: integer
+          format: int64
+          description: |
+            Which settings document this decision was taken under. Settings
+            change while the service runs, so without this a decision read back
+            later cannot be explained.
+        constrained: { type: boolean }
+        constraint:
+          type: string
+          description: Which limit held the plan back — a cooldown, a step limit, a cloud lifetime.
+
+    CycleRequest:
+      type: object
+      properties:
+        at:
+          type: string
+          format: date-time
+          description: |
+            The instant this cycle runs at. A replay passes its own compressed
+            clock; a live target omits it and gets real time.
+        workload:
+          $ref: "#/components/schemas/Workload"
+      description: |
+        `workload` is required for a target whose platform cannot see its own
+        queue, and is honoured only in `driven` mode.
+
+    CycleResult:
+      type: object
+      properties:
+        decision: { $ref: "#/components/schemas/Decision" }
+        observation:
+          type: object
+          properties:
+            capacity: { $ref: "#/components/schemas/Capacity" }
+            workload: { $ref: "#/components/schemas/Workload" }
+        applied:
+          type: object
+          description: Absent when nothing needed applying, or under dry run.
+          properties:
+            applied: { $ref: "#/components/schemas/Plan" }
+            changed: { type: boolean }
+            detail: { type: string }
+
+    TargetStatus:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        mode: { type: string }
+        settings_version: { type: integer, format: int64 }
+        last_decision: { $ref: "#/components/schemas/Decision" }
+        last_error: { type: string }
+        last_cycle_at: { type: string, format: date-time }

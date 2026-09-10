@@ -45,6 +45,51 @@ type server struct {
 	Options
 }
 
+// route is one endpoint. Keeping them in a table rather than inline lets the
+// spec be checked against the implementation, which is the only thing that
+// keeps an OpenAPI document honest over time.
+type route struct {
+	Method  string
+	Path    string
+	Public  bool
+	Handler func(*server) http.HandlerFunc
+}
+
+var routes = []route{
+	// Probes are unauthenticated. A kubelet cannot carry a credential, and
+	// requiring one would have the pod killed for being unauthenticated rather
+	// than unhealthy.
+	{http.MethodGet, "/healthz", true, func(s *server) http.HandlerFunc { return s.health }},
+	{http.MethodGet, "/readyz", true, func(s *server) http.HandlerFunc { return s.health }},
+
+	{http.MethodGet, "/v1/platforms", false, func(s *server) http.HandlerFunc { return s.listPlatforms }},
+	{http.MethodGet, "/v1/settings/defaults", false, func(s *server) http.HandlerFunc { return s.defaultSettings }},
+
+	{http.MethodGet, "/v1/targets", false, func(s *server) http.HandlerFunc { return s.listTargets }},
+	{http.MethodPost, "/v1/targets", false, func(s *server) http.HandlerFunc { return s.createTarget }},
+	{http.MethodGet, "/v1/targets/{id}", false, func(s *server) http.HandlerFunc { return s.getTarget }},
+	{http.MethodPut, "/v1/targets/{id}", false, func(s *server) http.HandlerFunc { return s.updateTarget }},
+	{http.MethodDelete, "/v1/targets/{id}", false, func(s *server) http.HandlerFunc { return s.deleteTarget }},
+
+	{http.MethodGet, "/v1/targets/{id}/settings", false, func(s *server) http.HandlerFunc { return s.getSettings }},
+	{http.MethodPatch, "/v1/targets/{id}/settings", false, func(s *server) http.HandlerFunc { return s.applySettings }},
+	{http.MethodPut, "/v1/targets/{id}/settings", false, func(s *server) http.HandlerFunc { return s.applySettings }},
+	{http.MethodGet, "/v1/targets/{id}/settings/history", false, func(s *server) http.HandlerFunc { return s.settingsHistory }},
+
+	{http.MethodPost, "/v1/targets/{id}/cycle", false, func(s *server) http.HandlerFunc { return s.runCycle }},
+	{http.MethodGet, "/v1/targets/{id}/status", false, func(s *server) http.HandlerFunc { return s.targetStatus }},
+}
+
+// Routes is every endpoint this service serves, as method and path. Exported
+// so the OpenAPI document can be checked against it.
+func Routes() []string {
+	out := make([]string, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, r.Method+" "+r.Path)
+	}
+	return out
+}
+
 // New builds the HTTP handler.
 func New(options Options) http.Handler {
 	if options.Logger == nil {
@@ -53,30 +98,14 @@ func New(options Options) http.Handler {
 	s := &server{Options: options}
 
 	mux := http.NewServeMux()
-
-	// Probes are unauthenticated. A kubelet cannot carry a credential, and
-	// requiring one would have the pod killed for being unauthenticated rather
-	// than unhealthy.
-	mux.HandleFunc("GET /healthz", s.health)
-	mux.HandleFunc("GET /readyz", s.health)
-
-	mux.Handle("GET /v1/platforms", s.guarded(s.listPlatforms))
-	mux.Handle("GET /v1/settings/defaults", s.guarded(s.defaultSettings))
-
-	mux.Handle("GET /v1/targets", s.guarded(s.listTargets))
-	mux.Handle("POST /v1/targets", s.guarded(s.createTarget))
-	mux.Handle("GET /v1/targets/{id}", s.guarded(s.getTarget))
-	mux.Handle("PUT /v1/targets/{id}", s.guarded(s.updateTarget))
-	mux.Handle("DELETE /v1/targets/{id}", s.guarded(s.deleteTarget))
-
-	mux.Handle("GET /v1/targets/{id}/settings", s.guarded(s.getSettings))
-	mux.Handle("PATCH /v1/targets/{id}/settings", s.guarded(s.applySettings))
-	mux.Handle("PUT /v1/targets/{id}/settings", s.guarded(s.applySettings))
-	mux.Handle("GET /v1/targets/{id}/settings/history", s.guarded(s.settingsHistory))
-
-	mux.Handle("POST /v1/targets/{id}/cycle", s.guarded(s.runCycle))
-	mux.Handle("GET /v1/targets/{id}/status", s.guarded(s.targetStatus))
-
+	for _, r := range routes {
+		handler := r.Handler(s)
+		if r.Public {
+			mux.Handle(r.Method+" "+r.Path, handler)
+			continue
+		}
+		mux.Handle(r.Method+" "+r.Path, s.guarded(handler))
+	}
 	return mux
 }
 
