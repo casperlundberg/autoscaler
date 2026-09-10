@@ -38,12 +38,30 @@ const (
 	KindColonyOSContainers Kind = "colonyos-container"
 )
 
-// Target is one scalable workload: which platform, how to reach it, and the
-// access keys to act on it.
+// Mode says who drives a target's control loop.
+type Mode string
+
+const (
+	// ModeAutonomous means this service runs the loop itself: it polls the
+	// platform for the queue, decides, and provisions, on its own schedule.
+	ModeAutonomous Mode = "autonomous"
+
+	// ModeDriven means someone else supplies the observation and asks for a
+	// decision. A simulation run works this way, and so does any platform that
+	// cannot see its own queue.
+	ModeDriven Mode = "driven"
+)
+
+// Target is one scalable workload: which platform, how to reach it, the access
+// keys to act on it, and who drives its loop.
 type Target struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Kind Kind   `json:"kind"`
+
+	// Mode defaults to driven, which is the safe default: a target only starts
+	// provisioning on its own once somebody says it should.
+	Mode Mode `json:"mode"`
 
 	// Config is the platform's non-secret settings — namespace, deployment
 	// names, image, colony name. Its keys are defined by the adapter's Schema.
@@ -145,6 +163,23 @@ type Schema struct {
 // missing fields through three failed requests.
 func (s Schema) Check(t Target) error {
 	var problems []string
+
+	switch t.Mode {
+	case "", ModeDriven, ModeAutonomous:
+	default:
+		problems = append(problems, fmt.Sprintf("mode %q is not one of %q or %q",
+			t.Mode, ModeAutonomous, ModeDriven))
+	}
+	if t.Mode == ModeAutonomous && !s.SeesWorkload {
+		// An autonomous loop has to be able to see the work it is scaling for.
+		// The alternative — polling a platform that reports only capacity —
+		// would decide from an empty queue every cycle and scale everything to
+		// its floor.
+		problems = append(problems, fmt.Sprintf(
+			"mode %q needs a platform that can see its own queue, and %s cannot: "+
+				"use %q and supply the workload with each decision",
+			ModeAutonomous, s.Kind, ModeDriven))
+	}
 
 	known := make(map[string]bool, len(s.Config))
 	for _, f := range s.Config {

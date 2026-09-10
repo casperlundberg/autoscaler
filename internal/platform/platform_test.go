@@ -232,3 +232,62 @@ func TestConfigBoolAcceptsTheUsualSpellings(t *testing.T) {
 		}
 	}
 }
+
+func TestModeDefaultsToDrivenSoNothingProvisionsUnasked(t *testing.T) {
+	target := platform.Target{
+		Kind:        platform.KindKubernetes,
+		Config:      map[string]string{"namespace": "mining", "local_deployment": "executor-local"},
+		Credentials: secret.NewBundle(map[string]string{"bearer_token": "t"}),
+	}
+
+	if err := schemaWithRequirements().Check(target); err != nil {
+		t.Errorf("Check() = %v, want an unset mode accepted as driven", err)
+	}
+}
+
+// An autonomous loop has to be able to see the work it is scaling for.
+// Polling a platform that reports only capacity would decide from an empty
+// queue every cycle and take everything down to its floor.
+func TestAPlatformThatCannotSeeItsQueueCannotRunAutonomously(t *testing.T) {
+	target := platform.Target{
+		Kind:        platform.KindKubernetes,
+		Mode:        platform.ModeAutonomous,
+		Config:      map[string]string{"namespace": "mining", "local_deployment": "executor-local"},
+		Credentials: secret.NewBundle(map[string]string{"bearer_token": "t"}),
+	}
+
+	err := schemaWithRequirements().Check(target)
+	if err == nil || !strings.Contains(err.Error(), "driven") {
+		t.Errorf("Check() = %v, want a refusal pointing at driven mode", err)
+	}
+}
+
+func TestAPlatformThatSeesItsQueueMayRunAutonomously(t *testing.T) {
+	schema := schemaWithRequirements()
+	schema.SeesWorkload = true
+
+	target := platform.Target{
+		Kind:        platform.KindKubernetes,
+		Mode:        platform.ModeAutonomous,
+		Config:      map[string]string{"namespace": "mining", "local_deployment": "executor-local"},
+		Credentials: secret.NewBundle(map[string]string{"bearer_token": "t"}),
+	}
+
+	if err := schema.Check(target); err != nil {
+		t.Errorf("Check() = %v, want nil", err)
+	}
+}
+
+func TestAnUnknownModeIsRefused(t *testing.T) {
+	target := platform.Target{
+		Kind:        platform.KindKubernetes,
+		Mode:        "semi-automatic",
+		Config:      map[string]string{"namespace": "mining", "local_deployment": "executor-local"},
+		Credentials: secret.NewBundle(map[string]string{"bearer_token": "t"}),
+	}
+
+	if err := schemaWithRequirements().Check(target); err == nil ||
+		!strings.Contains(err.Error(), "semi-automatic") {
+		t.Errorf("Check() = %v, want the unknown mode named", err)
+	}
+}
