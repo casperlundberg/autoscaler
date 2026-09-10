@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -157,5 +158,47 @@ func TestValidateRejectsMalformedStates(t *testing.T) {
 				t.Errorf("Validate() = %q, want it to mention %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// Durations cross the wire as seconds everywhere in this contract, because
+// they are read by people in a run log and typed by hand into requests.
+func TestQueueInfoRoundTripsThroughJSONAsSeconds(t *testing.T) {
+	original := domain.QueueInfo{Depth: 40, OldestJobAge: 90 * time.Second, ArrivalRate: 0.5}
+
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal() = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"oldest_job_age_seconds":90`) {
+		t.Errorf("Marshal() = %s, want the age in seconds", encoded)
+	}
+
+	var back domain.QueueInfo
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatalf("Unmarshal() = %v", err)
+	}
+	if back != original {
+		t.Errorf("round trip = %+v, want %+v", back, original)
+	}
+}
+
+func TestProjectionRoundTripsThroughJSONAsSeconds(t *testing.T) {
+	original := domain.Projection{
+		BreachExpected: true, FirstBreachPriority: 100,
+		FirstBreachIn: 45 * time.Second, PeakQueueDepth: 900,
+		DrainedAt: 5 * time.Minute,
+	}
+
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal() = %v", err)
+	}
+	var back domain.Projection
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatalf("Unmarshal() = %v", err)
+	}
+	if back != original {
+		t.Errorf("round trip = %+v, want %+v", back, original)
 	}
 }

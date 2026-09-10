@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Plan is the capacity the decision engine wants to exist: an absolute count
 // per tier, not a delta.
@@ -127,3 +130,40 @@ func (d Decision) Delta() (local, cloud int) {
 // IsNoop reports whether the decision leaves capacity exactly as it was, and
 // therefore needs nothing applied to the platform.
 func (d Decision) IsNoop() bool { return d.Plan == d.Previous }
+
+// projectionWire is Projection's JSON shape, in seconds for the same reason
+// the rest of this contract is.
+type projectionWire struct {
+	BreachExpected      bool     `json:"breach_expected"`
+	FirstBreachPriority Priority `json:"first_breach_priority,omitempty"`
+	FirstBreachInSecs   float64  `json:"first_breach_in_seconds,omitempty"`
+	PeakQueueDepth      int      `json:"peak_queue_depth"`
+	DrainedAtSecs       float64  `json:"drained_at_seconds,omitempty"`
+}
+
+// MarshalJSON renders a projection with its durations in seconds.
+func (p Projection) MarshalJSON() ([]byte, error) {
+	return json.Marshal(projectionWire{
+		BreachExpected:      p.BreachExpected,
+		FirstBreachPriority: p.FirstBreachPriority,
+		FirstBreachInSecs:   p.FirstBreachIn.Seconds(),
+		PeakQueueDepth:      p.PeakQueueDepth,
+		DrainedAtSecs:       p.DrainedAt.Seconds(),
+	})
+}
+
+// UnmarshalJSON reads a projection whose durations are in seconds.
+func (p *Projection) UnmarshalJSON(data []byte) error {
+	var wire projectionWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*p = Projection{
+		BreachExpected:      wire.BreachExpected,
+		FirstBreachPriority: wire.FirstBreachPriority,
+		FirstBreachIn:       time.Duration(wire.FirstBreachInSecs * float64(time.Second)),
+		PeakQueueDepth:      wire.PeakQueueDepth,
+		DrainedAt:           time.Duration(wire.DrainedAtSecs * float64(time.Second)),
+	}
+	return nil
+}

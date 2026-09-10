@@ -5,6 +5,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -164,6 +165,39 @@ func (s SystemState) Validate() error {
 		if f.value < 0 {
 			return fmt.Errorf("capacity.%s must be >= 0, got %d", f.name, f.value)
 		}
+	}
+	return nil
+}
+
+// queueInfoWire is QueueInfo's JSON shape. Durations cross the wire as
+// seconds, matching the settings document: these values are read by people in
+// a run log and typed into a request by hand, and Go's nanosecond integers are
+// neither readable nor writable that way.
+type queueInfoWire struct {
+	Depth               int     `json:"depth"`
+	OldestJobAgeSeconds float64 `json:"oldest_job_age_seconds"`
+	ArrivalRate         float64 `json:"arrival_rate_per_second"`
+}
+
+// MarshalJSON renders a queue level with its age in seconds.
+func (q QueueInfo) MarshalJSON() ([]byte, error) {
+	return json.Marshal(queueInfoWire{
+		Depth:               q.Depth,
+		OldestJobAgeSeconds: q.OldestJobAge.Seconds(),
+		ArrivalRate:         q.ArrivalRate,
+	})
+}
+
+// UnmarshalJSON reads a queue level whose age is in seconds.
+func (q *QueueInfo) UnmarshalJSON(data []byte) error {
+	var wire queueInfoWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*q = QueueInfo{
+		Depth:        wire.Depth,
+		OldestJobAge: time.Duration(wire.OldestJobAgeSeconds * float64(time.Second)),
+		ArrivalRate:  wire.ArrivalRate,
 	}
 	return nil
 }
