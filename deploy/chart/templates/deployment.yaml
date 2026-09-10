@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "autoscaler.fullname" . }}
+  labels:
+    {{- include "autoscaler.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Recreate, not RollingUpdate. Two replicas would both hold the same target
+  # file and both drive the same autonomous targets, each deciding from
+  # capacity the other had just changed.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "autoscaler.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "autoscaler.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Restart the pod when the token changes, so a rotation actually takes
+        # effect instead of waiting for the next unrelated deploy.
+        checksum/auth: {{ printf "%s-%s" .Values.auth.existingSecret .Values.auth.token | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "autoscaler.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: autoscaler
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: AUTOSCALER_ADDRESS
+              value: ":8080"
+            - name: AUTOSCALER_TICK
+              value: {{ .Values.tick | quote }}
+            - name: AUTOSCALER_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- if .Values.persistence.enabled }}
+            - name: AUTOSCALER_STATE_FILE
+              value: /var/lib/autoscaler/targets.json
+            {{- end }}
+            {{- if or .Values.auth.existingSecret .Values.auth.token }}
+            - name: AUTOSCALER_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "autoscaler.tokenSecretName" . }}
+                  key: api-token
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: state
+              mountPath: /var/lib/autoscaler
+            {{- end }}
+            # readOnlyRootFilesystem is on, and Go writes temporary files
+            # during an atomic state save.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "autoscaler.fullname" . }}-state
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

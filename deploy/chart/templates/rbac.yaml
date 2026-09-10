@@ -1,0 +1,53 @@
+{{- if .Values.rbac.create }}
+{{- $namespaces := .Values.rbac.namespaces | default (list .Release.Namespace) }}
+{{- range $namespace := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "autoscaler.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "autoscaler.labels" $ | nindent 4 }}
+rules:
+  # Counting capacity: Ready pods, and what each Deployment has been asked for.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  # Resizing an existing pool. The scale subresource only, so a scaling write
+  # can never touch a pod template and roll the pool.
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+  # Creating a pool that does not exist yet, for the colonyos-k8s platform.
+  # Remove this rule to run against pools an operator manages themselves.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create"]
+  # Writing the ColonyOS executor key the pods read. Referenced from the pod
+  # spec rather than inlined, so it is readable only to whoever can read
+  # Secrets here.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "autoscaler.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "autoscaler.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "autoscaler.fullname" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "autoscaler.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

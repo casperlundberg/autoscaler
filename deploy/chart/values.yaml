@@ -1,0 +1,79 @@
+image:
+  repository: ghcr.io/casperlundberg/autoscaler
+  tag: ""            # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# The API token guarding every endpoint but the probes.
+#
+# There is no default. A service holding Kubernetes tokens, ColonyOS private
+# keys and Docker certificates must not ship with a well-known credential, and
+# a chart that generated one silently would leave nobody able to say what it
+# is.
+auth:
+  # existingSecret: a Secret with an "api-token" key. Preferred: the token
+  # never passes through values.yaml or a git history.
+  existingSecret: ""
+  # token: for a development install only.
+  token: ""
+
+# Where registered targets and their access keys are kept.
+#
+# Without persistence the service loses every target on restart and comes back
+# unable to scale anything, so this is on by default. The file holds keys in
+# the clear, mode 0600 — give the volume the same protection as any Secret.
+persistence:
+  enabled: true
+  size: 1Gi
+  # storageClassName must be set explicitly. Leaving it unset on a cluster with
+  # no default StorageClass produces a PVC that stays Pending forever, with
+  # nothing in the pod's events to explain why.
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+
+# RBAC for scaling workloads in this cluster.
+#
+# Only granted for the namespaces listed. A ClusterRole is deliberately not an
+# option here: this service creates Deployments and reads Secrets, and it
+# should be able to do that exactly where an operator has said so.
+rbac:
+  create: true
+  # Namespaces this autoscaler may provision into. Empty means its own.
+  namespaces: []
+
+serviceAccount:
+  create: true
+  name: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# Scheduler granularity for autonomous targets. Not any target's cadence —
+# each is cycled on its own decision interval.
+tick: 1s
+
+logLevel: info
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

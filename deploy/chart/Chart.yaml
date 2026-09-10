@@ -1,0 +1,6 @@
+apiVersion: v2
+name: autoscaler
+description: A scaling controller for priority-aware batch workloads, across Kubernetes, ColonyOS and simulation.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
