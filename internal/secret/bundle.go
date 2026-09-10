@@ -144,3 +144,21 @@ func (b Bundle) MergeOnto(stored Bundle) Bundle {
 	}
 	return Bundle{values: merged}
 }
+
+// Export returns the credentials in the clear.
+//
+// This is the one deliberate exception to the redaction MarshalJSON enforces,
+// and it is named so that every use of it is obvious in a diff and in a grep.
+// It exists for persistence: a registry that stored redacted credentials would
+// lose every access key on restart, and the service would come back unable to
+// scale anything.
+//
+// Anything calling this is responsible for where the result ends up. Nothing
+// that produces a response, a log line or an error message may call it.
+func (b Bundle) Export() map[string]string {
+	out := make(map[string]string, len(b.values))
+	for k, v := range b.values {
+		out[k] = v
+	}
+	return out
+}

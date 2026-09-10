@@ -202,3 +202,27 @@ func TestAZeroBundleIsUsable(t *testing.T) {
 		t.Errorf("Marshal() on a zero bundle = %v", err)
 	}
 }
+
+// Export is the one way past redaction, and it exists so the registry can
+// persist access keys — otherwise every restart would lose them and the
+// service would come back unable to scale anything.
+func TestExportReturnsTheCredentialsInTheClear(t *testing.T) {
+	b := secret.NewBundle(map[string]string{"bearer_token": "s3cr3t", "other": "value"})
+
+	got := b.Export()
+
+	if got["bearer_token"] != "s3cr3t" || got["other"] != "value" {
+		t.Errorf("Export() = %v, want the real values", got)
+	}
+}
+
+func TestExportDoesNotHandOutTheLiveMap(t *testing.T) {
+	b := secret.NewBundle(map[string]string{"bearer_token": "s3cr3t"})
+
+	exported := b.Export()
+	exported["bearer_token"] = "changed"
+
+	if got, _ := b.Get("bearer_token"); got != "s3cr3t" {
+		t.Errorf("writing to the exported map changed the bundle: %q", got)
+	}
+}
