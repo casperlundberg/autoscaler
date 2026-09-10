@@ -1,7 +1,9 @@
 package kubernetes_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,6 +31,16 @@ type fakeAPI struct {
 	// failNextPatch makes the next scale request fail, to check that a
 	// rejected apply is reported rather than assumed to have worked.
 	failNextPatch bool
+
+	// failNextCreate does the same for a Deployment creation.
+	failNextCreate bool
+
+	// created records the raw body of each posted Deployment, so a test can
+	// assert on the pod spec that was actually sent.
+	created map[string]string
+
+	// secrets is the namespace's Secret store, values already base64-decoded.
+	secrets map[string]map[string]string
 }
 
 type fakeDeployment struct {
@@ -43,7 +55,12 @@ type fakePod struct {
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
-	return &fakeAPI{t: t, token: "test-token", deployments: map[string]*fakeDeployment{}}
+	return &fakeAPI{
+		t: t, token: "test-token",
+		deployments: map[string]*fakeDeployment{},
+		created:     map[string]string{},
+		secrets:     map[string]map[string]string{},
+	}
 }
 
 func (f *fakeAPI) withDeployment(name string, replicas int, selector map[string]string) *fakeAPI {
@@ -68,6 +85,20 @@ func (f *fakeAPI) replicas(name string) int {
 		return d.replicas
 	}
 	return -1
+}
+
+// createdDeployment is the body posted for a Deployment, if one was.
+func (f *fakeAPI) createdDeployment(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.created[name]
+}
+
+// secretValue reads back a stored Secret entry.
+func (f *fakeAPI) secretValue(name, key string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.secrets[name][key]
 }
 
 func (f *fakeAPI) sawRequest(substring string) bool {
@@ -100,10 +131,16 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/scale") && r.Method == http.MethodPatch:
 		f.serveScale(w, r)
+	case strings.HasSuffix(r.URL.Path, "/deployments") && r.Method == http.MethodPost:
+		f.serveCreateDeployment(w, r)
 	case strings.Contains(r.URL.Path, "/deployments/") && r.Method == http.MethodGet:
 		f.serveDeployment(w, r)
 	case strings.HasSuffix(r.URL.Path, "/pods") && r.Method == http.MethodGet:
 		f.servePods(w, r)
+	case strings.HasSuffix(r.URL.Path, "/secrets") && r.Method == http.MethodPost:
+		f.serveCreateSecret(w, r)
+	case strings.Contains(r.URL.Path, "/secrets/") && r.Method == http.MethodPut:
+		f.serveReplaceSecret(w, r)
 	default:
 		writeStatus(w, http.StatusNotFound, "no such endpoint: "+r.URL.Path)
 	}
@@ -233,4 +270,109 @@ func writeStatus(w http.ResponseWriter, code int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"kind": "Status", "status": "Failure", "message": message, "code": code,
 	})
+}
+
+func (f *fakeAPI) serveCreateDeployment(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.failNextCreate {
+		f.failNextCreate = false
+		writeStatus(w, http.StatusForbidden, "deployments.apps is forbidden")
+		return
+	}
+
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "unreadable body")
+		return
+	}
+
+	var posted struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Spec struct {
+			Replicas *int `json:"replicas"`
+			Selector struct {
+				MatchLabels map[string]string `json:"matchLabels"`
+			} `json:"selector"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &posted); err != nil || posted.Metadata.Name == "" {
+		writeStatus(w, http.StatusBadRequest, "malformed Deployment")
+		return
+	}
+	if _, exists := f.deployments[posted.Metadata.Name]; exists {
+		writeStatus(w, http.StatusConflict, `deployments.apps "`+posted.Metadata.Name+`" already exists`)
+		return
+	}
+
+	replicas := 0
+	if posted.Spec.Replicas != nil {
+		replicas = *posted.Spec.Replicas
+	}
+	f.deployments[posted.Metadata.Name] = &fakeDeployment{
+		replicas: replicas, selector: posted.Spec.Selector.MatchLabels,
+	}
+	f.created[posted.Metadata.Name] = string(raw)
+
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]any{"metadata": map[string]any{"name": posted.Metadata.Name}})
+}
+
+func (f *fakeAPI) serveCreateSecret(w http.ResponseWriter, r *http.Request) {
+	name, data, ok := decodeSecret(w, r)
+	if !ok {
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.secrets[name]; exists {
+		writeStatus(w, http.StatusConflict, `secrets "`+name+`" already exists`)
+		return
+	}
+	f.secrets[name] = data
+
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]any{"metadata": map[string]any{"name": name}})
+}
+
+func (f *fakeAPI) serveReplaceSecret(w http.ResponseWriter, r *http.Request) {
+	name, data, ok := decodeSecret(w, r)
+	if !ok {
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.secrets[name] = data
+	writeJSON(w, map[string]any{"metadata": map[string]any{"name": name}})
+}
+
+// decodeSecret reads a Secret body, undoing the base64 the API requires so a
+// test can assert on the value that was actually stored.
+func decodeSecret(w http.ResponseWriter, r *http.Request) (string, map[string]string, bool) {
+	var posted struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Data map[string]string `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&posted); err != nil || posted.Metadata.Name == "" {
+		writeStatus(w, http.StatusBadRequest, "malformed Secret")
+		return "", nil, false
+	}
+
+	decoded := map[string]string{}
+	for key, encoded := range posted.Data {
+		value, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "Secret data must be base64: "+key)
+			return "", nil, false
+		}
+		decoded[key] = string(value)
+	}
+	return posted.Metadata.Name, decoded, true
 }
