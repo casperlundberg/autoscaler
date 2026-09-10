@@ -335,3 +335,38 @@ func (s Settings) Clone() Settings {
 	}
 	return out
 }
+
+// Warnings are settings that are legal but probably not what the operator
+// meant. They are returned alongside the document rather than refusing it,
+// because each of these is a reasonable thing to want deliberately — and a
+// service that refuses a legal configuration it merely disapproves of is one
+// operators learn to work around.
+func (s Settings) Warnings() []string {
+	var warnings []string
+
+	if slowest := max(s.LocalColdstart, s.CloudColdstart); s.Horizon < slowest {
+		warnings = append(warnings, fmt.Sprintf(
+			"horizon_seconds (%v) is shorter than the slowest coldstart (%v): a breach "+
+				"will not be visible far enough ahead for new executors to arrive before "+
+				"it happens, so scale-ups will always be late",
+			s.Horizon, slowest))
+	}
+	if s.LocalExecutorCap == 0 && s.CloudExecutorCap == 0 {
+		warnings = append(warnings,
+			"local_executor_cap and cloud_executor_cap are both 0: no plan can ever "+
+				"provision anything")
+	}
+	if s.DryRun {
+		warnings = append(warnings,
+			"dry_run is on: decisions are computed and recorded but never applied to "+
+				"the platform")
+	}
+	return warnings
+}
+
+func max(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
