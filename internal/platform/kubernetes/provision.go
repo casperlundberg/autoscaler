@@ -33,9 +33,13 @@ type DeploymentSpec struct {
 	Labels map[string]string
 
 	// Env is plain configuration. SecretEnv is for anything that must not be
-	// readable in a pod spec.
+	// readable in a pod spec. FieldEnv maps an environment variable to a pod
+	// field path, for values that are only knowable once a pod is scheduled —
+	// its own name, above all, since ColonyOS executors register by name and
+	// must not collide.
 	Env       map[string]string
 	SecretEnv map[string]SecretKeyRef
+	FieldEnv  map[string]string
 
 	ImagePullSecrets []string
 
@@ -181,11 +185,14 @@ func (s DeploymentSpec) manifest(namespace string) map[string]any {
 // envEntries renders environment in a stable order, so two identical specs
 // produce byte-identical manifests and a diff shows only real changes.
 func (s DeploymentSpec) envEntries() []any {
-	names := make([]string, 0, len(s.Env)+len(s.SecretEnv))
+	names := make([]string, 0, len(s.Env)+len(s.SecretEnv)+len(s.FieldEnv))
 	for name := range s.Env {
 		names = append(names, name)
 	}
 	for name := range s.SecretEnv {
+		names = append(names, name)
+	}
+	for name := range s.FieldEnv {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -200,6 +207,15 @@ func (s DeploymentSpec) envEntries() []any {
 				"name": name,
 				"valueFrom": map[string]any{
 					"secretKeyRef": map[string]any{"name": ref.Secret, "key": ref.Key},
+				},
+			})
+			continue
+		}
+		if path, ok := s.FieldEnv[name]; ok {
+			entries = append(entries, map[string]any{
+				"name": name,
+				"valueFrom": map[string]any{
+					"fieldRef": map[string]any{"fieldPath": path},
 				},
 			})
 			continue

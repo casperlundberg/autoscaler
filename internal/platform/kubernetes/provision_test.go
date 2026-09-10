@@ -195,3 +195,21 @@ func TestADeploymentSpecWithNoImageIsRefusedBeforeAnyCall(t *testing.T) {
 		t.Errorf("EnsureDeployment() = %v, want a complaint about the missing image", err)
 	}
 }
+
+// ColonyOS executors register themselves by name and must not collide, so
+// each pod needs its own. The only value that is unique per pod and known
+// only at scheduling time is the pod's own name.
+func TestAnEnvironmentValueCanComeFromThePodsOwnMetadata(t *testing.T) {
+	api := kubetest.New(t)
+	spec := executorSpec()
+	spec.FieldEnv = map[string]string{"COLONIES_EXECUTOR_NAME": "metadata.name"}
+
+	if _, err := clientAgainst(t, api).EnsureDeployment(context.Background(), spec); err != nil {
+		t.Fatalf("EnsureDeployment() = %v", err)
+	}
+
+	body := api.CreatedDeployment("executor-storhall-local")
+	if !strings.Contains(body, "fieldRef") || !strings.Contains(body, "metadata.name") {
+		t.Errorf("posted Deployment does not source the executor name from pod metadata:\n%s", body)
+	}
+}
