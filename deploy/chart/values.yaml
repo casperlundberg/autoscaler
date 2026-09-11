@@ -1,5 +1,8 @@
 image:
-  repository: ghcr.io/casperlundberg/autoscaler
+  # Docker Hub, and the namespace is cappelumpa — that is the Docker Hub
+  # account, not the GitHub user casperlundberg. The two have been confused
+  # before.
+  repository: docker.io/cappelumpa/autoscaler
   tag: ""            # defaults to the chart's appVersion
   pullPolicy: IfNotPresent
 
