@@ -70,11 +70,12 @@ This service is useful on its own — anything that can describe a queue can
 drive it. It was built alongside two others, in sibling repositories:
 
 - **simlab-api** — replays mining workloads against this service and records
-  every decision, so two policies can be compared on identical work. Its
-  `deploy/platform` chart installs all three into one namespace, and its
-  `verify.sh` runs the whole platform for real.
+  every decision, so two policies can be compared on identical work.
 - **simlab-web** — the browser app for defining runs, reading their timelines,
   and editing a live target's settings.
+- **platform-deploy** — what the platform needs in order to run: the umbrella
+  chart, per-cluster values, the credential inventory, and `verify.sh`, which
+  runs all of it for real and checks the result.
 
 ## Deployment
 
