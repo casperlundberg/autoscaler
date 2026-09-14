@@ -111,8 +111,8 @@ func (c *Controller) Cycle(ctx context.Context, targetID string, input Input) (R
 }
 
 func (c *Controller) execute(ctx context.Context, provisioner platform.Provisioner,
-	target platform.Target, loop policy.LoopState, settings config.Snapshot,
-	input Input, now time.Time) (Result, policy.LoopState, error) {
+	target platform.Target, loop domain.LoopState, settings config.Snapshot,
+	input Input, now time.Time) (Result, domain.LoopState, error) {
 	observation, err := provisioner.Observe(ctx, target)
 	if err != nil {
 		return Result{}, loop, fmt.Errorf("observing target %q: %w", target.ID, err)

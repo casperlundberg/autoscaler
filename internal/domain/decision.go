@@ -167,3 +167,19 @@ func (p *Projection) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
+
+// LoopState is everything the engine remembers between cycles. It is passed in
+// and handed back rather than held inside the engine, which keeps Decide a
+// pure function of its inputs: the same observation and the same memory always
+// produce the same decision, so a replayed run and the live run it explains
+// cannot diverge.
+type LoopState struct {
+	// LastScaleUp and LastScaleDown are when capacity last actually moved, and
+	// are what the cooldowns are measured against.
+	LastScaleUp   time.Time
+	LastScaleDown time.Time
+
+	// CloudSince is when the cloud tier last grew. Zero when no cloud capacity
+	// is held.
+	CloudSince time.Time
+}

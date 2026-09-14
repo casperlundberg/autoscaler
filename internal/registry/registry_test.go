@@ -16,7 +16,6 @@ import (
 	"github.com/casperlundberg/autoscaler/internal/domain"
 	"github.com/casperlundberg/autoscaler/internal/platform"
 	"github.com/casperlundberg/autoscaler/internal/platform/simulation"
-	"github.com/casperlundberg/autoscaler/internal/policy"
 	"github.com/casperlundberg/autoscaler/internal/registry"
 	"github.com/casperlundberg/autoscaler/internal/secret"
 )
@@ -420,8 +419,8 @@ func TestThePersistedFileIsNotWorldReadable(t *testing.T) {
 	}
 }
 
-func policyLoop(when time.Time) policy.LoopState {
-	return policy.LoopState{LastScaleUp: when}
+func policyLoop(when time.Time) domain.LoopState {
+	return domain.LoopState{LastScaleUp: when}
 }
 
 // mustRoundTrip renders credentials the way the API does — redacted — and

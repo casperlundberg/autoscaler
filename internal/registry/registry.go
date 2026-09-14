@@ -15,7 +15,6 @@ import (
 	"github.com/casperlundberg/autoscaler/internal/config"
 	"github.com/casperlundberg/autoscaler/internal/domain"
 	"github.com/casperlundberg/autoscaler/internal/platform"
-	"github.com/casperlundberg/autoscaler/internal/policy"
 	"github.com/casperlundberg/autoscaler/internal/secret"
 )
 
@@ -39,7 +38,7 @@ type Snapshot struct {
 	Target   platform.Target `json:"target"`
 	Settings config.Snapshot `json:"settings"`
 
-	Loop policy.LoopState `json:"-"`
+	Loop domain.LoopState `json:"-"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -54,7 +53,7 @@ type Snapshot struct {
 
 // Cycle is what one control loop iteration reports back.
 type Cycle struct {
-	Loop     policy.LoopState
+	Loop     domain.LoopState
 	Decision *domain.Decision
 	Err      error
 	At       time.Time
@@ -65,7 +64,7 @@ type record struct {
 	target   platform.Target
 	settings *config.Store
 
-	loop         policy.LoopState
+	loop         domain.LoopState
 	lastDecision *domain.Decision
 	lastError    string
 	lastCycleAt  time.Time
