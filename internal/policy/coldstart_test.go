@@ -222,3 +222,30 @@ func TestAZeroColdstartMakesCapacityImmediate(t *testing.T) {
 			ramped, instant)
 	}
 }
+
+// Found by platform-experiments/experiments/004-coldstart-and-the-cloud-bill.
+//
+// An unavoidable breach reported beside a large fleet that is entirely still
+// starting reads as nonsense: there is obviously plenty of capacity, so why is
+// the engine giving up? The answer is that none of it can work yet, and that
+// is the one fact the sentence was leaving out — on the branch where it
+// matters most, because "no executor count avoids it" is precisely the claim
+// an operator will want to argue with.
+func TestAnUnavoidableBreachSaysHowMuchCapacityIsAlreadyStarting(t *testing.T) {
+	settings := coldEngineSettings()
+	state := observation(noon, domain.Capacity{LocalPending: 40},
+		map[domain.Priority]domain.QueueInfo{
+			100: {Depth: 300, OldestJobAge: 55 * time.Second, ArrivalRate: 1},
+		})
+
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
+
+	if !strings.Contains(got.Reason, "no executor count avoids it") {
+		t.Fatalf("Reason = %q, want the unavoidable branch for this fixture", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "40 still starting") {
+		t.Errorf("Reason = %q, want it to say that all 40 executors are still "+
+			"starting — without that, giving up next to a fleet of 40 looks like "+
+			"a bug rather than an explanation", got.Reason)
+	}
+}

@@ -183,12 +183,14 @@ func explain(state domain.SystemState, current domain.Plan, requirement Requirem
 		// is a warmer floor or a faster image, not a bigger cap.
 		return fmt.Sprintf(
 			"P%d breaches in %s and no executor count avoids it — nothing can "+
-				"start inside the deadline (local %s, cloud %s coldstart); asking "+
-				"for the %d the queue needs once capacity arrives (minimum %d plus "+
-				"%.2fx safety) for %d jobs waiting, %.2f/s arriving",
+				"start inside the deadline (local %s, cloud %s coldstart), and the "+
+				"current %d executors%s cannot help in time; asking for the %d the "+
+				"queue needs once capacity arrives (minimum %d plus %.2fx safety) "+
+				"for %d jobs waiting, %.2f/s arriving",
 			requirement.Projection.FirstBreachPriority,
 			requirement.Projection.FirstBreachIn.Round(time.Second),
 			settings.LocalColdstart, settings.CloudColdstart,
+			current.Total(), starting(state.Capacity),
 			requirement.Executors, requirement.Minimum,
 			settings.SafetyFactor, waiting, arriving)
 	}
