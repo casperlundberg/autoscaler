@@ -17,12 +17,12 @@ func noSafety(s config.Settings) config.Settings {
 func TestAnEmptyQueueRequiresNothing(t *testing.T) {
 	state := stateWith(1, map[domain.Priority]domain.QueueInfo{})
 
-	got := policy.Required(state, noSafety(baseSettings()))
+	got := policy.Required(state, noSafety(noColdstart(baseSettings())))
 
 	if got.Executors != 0 {
 		t.Errorf("Executors = %d, want 0", got.Executors)
 	}
-	if !got.Feasible {
+	if !got.Feasible() {
 		t.Error("Feasible = false for an empty queue")
 	}
 }
@@ -30,7 +30,7 @@ func TestAnEmptyQueueRequiresNothing(t *testing.T) {
 // The whole point of searching is to find the *smallest* count that works.
 // Over-provisioning by one executor per cycle is how a cloud bill triples.
 func TestTheAnswerIsMinimal(t *testing.T) {
-	settings := noSafety(baseSettings())
+	settings := noSafety(noColdstart(baseSettings()))
 	state := stateWith(1, map[domain.Priority]domain.QueueInfo{
 		100: {Depth: 400, OldestJobAge: 30 * time.Second, ArrivalRate: 2},
 		50:  {Depth: 120, OldestJobAge: 2 * time.Minute, ArrivalRate: 0.5},
@@ -38,23 +38,23 @@ func TestTheAnswerIsMinimal(t *testing.T) {
 
 	got := policy.Required(state, settings)
 
-	if !got.Feasible {
+	if !got.Feasible() {
 		t.Fatalf("Feasible = false, want a satisfiable requirement: %+v", got)
 	}
-	if policy.Simulate(state, got.Minimum, settings).BreachExpected {
+	if policy.Simulate(state, ramp(state, got.Minimum, settings), settings).BreachExpected {
 		t.Errorf("Minimum = %d still breaches, so it is not a solution", got.Minimum)
 	}
 	if got.Minimum == 0 {
 		t.Fatal("Minimum = 0 for a saturated queue")
 	}
-	if !policy.Simulate(state, got.Minimum-1, settings).BreachExpected {
+	if !policy.Simulate(state, ramp(state, got.Minimum-1, settings), settings).BreachExpected {
 		t.Errorf("Minimum = %d, but %d also avoids a breach, so it is not minimal",
 			got.Minimum, got.Minimum-1)
 	}
 }
 
 func TestSafetyFactorBuysHeadroomAboveTheMinimum(t *testing.T) {
-	settings := baseSettings()
+	settings := noColdstart(baseSettings())
 	settings.SafetyFactor = 1.5
 	state := stateWith(1, map[domain.Priority]domain.QueueInfo{
 		100: {Depth: 400, OldestJobAge: 30 * time.Second, ArrivalRate: 2},
@@ -71,7 +71,7 @@ func TestSafetyFactorBuysHeadroomAboveTheMinimum(t *testing.T) {
 }
 
 func TestSafetyFactorRoundsUpNeverDown(t *testing.T) {
-	settings := baseSettings()
+	settings := noColdstart(baseSettings())
 	settings.SafetyFactor = 1.01
 	state := stateWith(1, map[domain.Priority]domain.QueueInfo{
 		100: {Depth: 400, OldestJobAge: 30 * time.Second, ArrivalRate: 2},
@@ -86,7 +86,7 @@ func TestSafetyFactorRoundsUpNeverDown(t *testing.T) {
 }
 
 func TestAnImpossibleWorkloadReportsTheCeilingAndSaysSo(t *testing.T) {
-	settings := noSafety(baseSettings())
+	settings := noSafety(noColdstart(baseSettings()))
 	settings.LocalExecutorCap = 4
 	settings.CloudExecutorCap = 6
 	settings.MinLocalExecutors = 0
@@ -98,7 +98,7 @@ func TestAnImpossibleWorkloadReportsTheCeilingAndSaysSo(t *testing.T) {
 
 	got := policy.Required(state, settings)
 
-	if got.Feasible {
+	if got.Feasible() {
 		t.Error("Feasible = true for a workload no permitted count can serve")
 	}
 	// Reporting the ceiling rather than giving up is what keeps the service
@@ -112,7 +112,7 @@ func TestAnImpossibleWorkloadReportsTheCeilingAndSaysSo(t *testing.T) {
 }
 
 func TestTheRequirementNeverExceedsTheCombinedCaps(t *testing.T) {
-	settings := noSafety(baseSettings())
+	settings := noSafety(noColdstart(baseSettings()))
 	settings.LocalExecutorCap = 3
 	settings.CloudExecutorCap = 2
 	settings.MinLocalExecutors = 0
@@ -130,7 +130,7 @@ func TestTheRequirementNeverExceedsTheCombinedCaps(t *testing.T) {
 }
 
 func TestTheProjectionDescribesTheCountActuallyChosen(t *testing.T) {
-	settings := baseSettings()
+	settings := noColdstart(baseSettings())
 	settings.SafetyFactor = 2.0
 	state := stateWith(1, map[domain.Priority]domain.QueueInfo{
 		100: {Depth: 300, OldestJobAge: 20 * time.Second, ArrivalRate: 1},
@@ -140,14 +140,14 @@ func TestTheProjectionDescribesTheCountActuallyChosen(t *testing.T) {
 
 	// Not the projection under Minimum: the operator is shown what the plan
 	// they are actually getting is expected to do.
-	if want := policy.Simulate(state, got.Executors, settings); got.Projection != want {
+	if want := policy.Simulate(state, ramp(state, got.Executors, settings), settings); got.Projection != want {
 		t.Errorf("Projection = %+v, want the projection under %d executors, %+v",
 			got.Projection, got.Executors, want)
 	}
 }
 
 func TestRequiredIsDeterministic(t *testing.T) {
-	settings := baseSettings()
+	settings := noColdstart(baseSettings())
 	state := stateWith(0.4, map[domain.Priority]domain.QueueInfo{
 		100: {Depth: 77, OldestJobAge: 14 * time.Second, ArrivalRate: 1.3},
 		25:  {Depth: 950, OldestJobAge: 3 * time.Hour, ArrivalRate: 0.2},

@@ -9,29 +9,13 @@ import (
 	"github.com/casperlundberg/autoscaler/internal/domain"
 )
 
-// LoopState is everything the engine remembers between cycles. It is passed in
-// and handed back rather than held inside the engine, which keeps Decide a
-// pure function of its inputs: the same observation and the same memory always
-// produce the same decision, so a replayed run and the live run it explains
-// cannot diverge.
-type LoopState struct {
-	// LastScaleUp and LastScaleDown are when capacity last actually moved, and
-	// are what the cooldowns are measured against.
-	LastScaleUp   time.Time
-	LastScaleDown time.Time
-
-	// CloudSince is when the cloud tier last grew. Zero when no cloud capacity
-	// is held.
-	CloudSince time.Time
-}
-
 // Decide produces the plan for one cycle.
 //
 // The observation's own timestamp is the clock. Not time.Now(): a replayed run
 // moves through compressed time, and cooldowns measured against wall-clock
 // time would evaporate — a five-minute cooldown would expire within one
 // simulated hour that took two real seconds to play.
-func Decide(state domain.SystemState, loop LoopState, settings config.Settings) (domain.Decision, LoopState) {
+func Decide(state domain.SystemState, loop domain.LoopState, settings config.Settings) (domain.Decision, domain.LoopState) {
 	now := state.Timestamp
 	current := state.Capacity.AsPlan()
 
@@ -71,7 +55,7 @@ func Decide(state domain.SystemState, loop LoopState, settings config.Settings) 
 // applyHysteresis is what stops the engine from thrashing. Left alone, a
 // controller that recomputes from scratch every fifteen seconds will chase
 // noise in the arrival rate, and each round trip costs a coldstart.
-func applyHysteresis(now time.Time, current, desired domain.Plan, loop LoopState,
+func applyHysteresis(now time.Time, current, desired domain.Plan, loop domain.LoopState,
 	settings config.Settings) (domain.Plan, string) {
 	var constraints []string
 	plan := desired
@@ -151,7 +135,7 @@ func clampToLimits(plan domain.Plan, settings config.Settings) domain.Plan {
 // A cycle that changed nothing must not restart the cooldown clocks: if it
 // did, a system sitting at its correct capacity would keep pushing its own
 // cooldown forward and the next real scale-down could never fire.
-func advance(now time.Time, current, plan domain.Plan, loop LoopState) LoopState {
+func advance(now time.Time, current, plan domain.Plan, loop domain.LoopState) domain.LoopState {
 	next := loop
 
 	if plan != current {
@@ -182,31 +166,62 @@ func explain(state domain.SystemState, current domain.Plan, requirement Requirem
 	waiting := state.TotalDepth()
 	arriving := state.TotalArrivalRate()
 
-	if !requirement.Feasible {
+	switch requirement.Outcome {
+	case Overloaded:
 		return fmt.Sprintf(
 			"overload: %d jobs waiting, %.2f/s arriving, and even %d executors "+
-				"(both caps combined) leave P%d breaching in %s; running at the ceiling",
+				"(both caps combined) serving from now leave P%d breaching in %s; "+
+				"running at the ceiling",
 			waiting, arriving, requirement.Executors,
 			requirement.Projection.FirstBreachPriority,
 			requirement.Projection.FirstBreachIn.Round(time.Second))
+
+	case Unavoidable:
+		// Worth saying explicitly, because the operator can act on it and on
+		// nothing else here: this breach is not a provisioning mistake, and no
+		// number of executors would have dodged it. What shortens it next time
+		// is a warmer floor or a faster image, not a bigger cap.
+		return fmt.Sprintf(
+			"P%d breaches in %s and no executor count avoids it — nothing can "+
+				"start inside the deadline (local %s, cloud %s coldstart); asking "+
+				"for the %d the queue needs once capacity arrives (minimum %d plus "+
+				"%.2fx safety) for %d jobs waiting, %.2f/s arriving",
+			requirement.Projection.FirstBreachPriority,
+			requirement.Projection.FirstBreachIn.Round(time.Second),
+			settings.LocalColdstart, settings.CloudColdstart,
+			requirement.Executors, requirement.Minimum,
+			settings.SafetyFactor, waiting, arriving)
 	}
 
-	atCurrent := Simulate(state, current.Total(), settings)
+	atCurrent := Simulate(state, AvailabilityOf(current, state.Capacity, settings), settings)
 	if atCurrent.BreachExpected {
 		return fmt.Sprintf(
-			"P%d breaches in %s at the current %d executors; %d needed "+
+			"P%d breaches in %s at the current %d executors%s; %d needed "+
 				"(minimum %d plus %.2fx safety) for %d jobs waiting, %.2f/s arriving",
 			atCurrent.FirstBreachPriority, atCurrent.FirstBreachIn.Round(time.Second),
-			current.Total(), requirement.Executors, requirement.Minimum,
-			settings.SafetyFactor, waiting, arriving)
+			current.Total(), starting(state.Capacity), requirement.Executors,
+			requirement.Minimum, settings.SafetyFactor, waiting, arriving)
 	}
 	if requirement.Executors < current.Total() {
 		return fmt.Sprintf(
-			"no breach predicted; %d executors is above the requirement of %d "+
+			"no breach predicted; %d executors%s is above the requirement of %d "+
 				"for %d jobs waiting, %.2f/s arriving",
-			current.Total(), requirement.Executors, waiting, arriving)
+			current.Total(), starting(state.Capacity), requirement.Executors, waiting, arriving)
 	}
 	return fmt.Sprintf(
-		"no breach predicted at %d executors; requirement is %d for %d jobs waiting, %.2f/s arriving",
-		current.Total(), requirement.Executors, waiting, arriving)
+		"no breach predicted at %d executors%s; requirement is %d for %d jobs waiting, %.2f/s arriving",
+		current.Total(), starting(state.Capacity), requirement.Executors, waiting, arriving)
+}
+
+// starting annotates an executor count with how much of it cannot work yet.
+//
+// Without this, a reasoning string reads the same whether all ten executors
+// are serving or seven are still pulling an image — and those are different
+// claims about the same number. The projection already accounts for the
+// difference; the sentence explaining it should say so too.
+func starting(capacity domain.Capacity) string {
+	if pending := capacity.TotalPending(); pending > 0 {
+		return fmt.Sprintf(" (%d still starting)", pending)
+	}
+	return ""
 }

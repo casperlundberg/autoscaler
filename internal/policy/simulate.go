@@ -11,7 +11,7 @@ import (
 	"github.com/casperlundberg/autoscaler/internal/domain"
 )
 
-// Simulate plays the queue forward under a fixed executor count and reports
+// Simulate plays the queue forward under a given capacity ramp and reports
 // what would happen.
 //
 // This is the core of the service. A threshold rule ("scale up above N jobs")
@@ -33,17 +33,17 @@ import (
 //     has waited longer than the level's deadline. That single test catches
 //     both failure modes: starvation, where a level never receives capacity,
 //     and saturation, where it receives capacity but arrivals outrun it.
+//   - Capacity is whatever Availability says can serve at that point in the
+//     horizon, not a flat count. Executors that are still starting contribute
+//     nothing until they have started, which is what makes a scale-up during
+//     a coldstart predict the breach it is actually going to get.
 //
 // The observation is not modified.
-func Simulate(state domain.SystemState, executors int, settings config.Settings) domain.Projection {
+func Simulate(state domain.SystemState, available Availability, settings config.Settings) domain.Projection {
 	step := settings.SimulationStep
 	if step <= 0 || settings.Horizon <= 0 {
 		return domain.Projection{}
 	}
-	if executors < 0 {
-		executors = 0
-	}
-
 	levels := state.SortedQueues()
 
 	// Working copies. Depths are floats because a step serves a fractional
@@ -60,8 +60,6 @@ func Simulate(state domain.SystemState, executors int, settings config.Settings)
 	if throughput < 0 {
 		throughput = 0
 	}
-	servedPerStep := float64(executors) * throughput * step.Seconds()
-
 	projection := domain.Projection{PeakQueueDepth: totalDepth(depth)}
 
 	// A job that is already late is a breach now, not a predicted one. Saying
@@ -79,7 +77,12 @@ func Simulate(state domain.SystemState, executors int, settings config.Settings)
 			elapsed = settings.Horizon
 		}
 
-		remaining := servedPerStep
+		// Capacity as it stands at the start of this step. An executor that
+		// becomes ready part-way through did not serve the work that was
+		// waiting at the beginning of it, and crediting it would let the
+		// projection borrow throughput from the future.
+		remaining := float64(available.Serving(elapsed-step)) * throughput * step.Seconds()
+
 		for i := range levels {
 			before := depth[i]
 

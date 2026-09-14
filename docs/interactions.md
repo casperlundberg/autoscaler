@@ -65,7 +65,7 @@ sequenceDiagram
     end
 
     Ctl->>Pol: Decide(state, loop memory, settings)
-    Pol->>Pol: Required() — smallest count with no predicted breach
+    Pol->>Pol: Required() — smallest count with no predicted breach,<br/>each candidate simulated on the ramp it actually arrives on
     Pol->>Pol: SplitTiers() — local to its cap, cloud as proven overflow
     Pol->>Pol: hysteresis — cooldowns, step limits, cloud lifetime
     Pol-->>Ctl: decision + next loop memory

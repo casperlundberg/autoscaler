@@ -29,7 +29,9 @@ func engineSettings() config.Settings {
 	s.MaxScaleUpStep = 100
 	s.MaxScaleDownStep = 100
 	s.CloudMinLifetime = 0
-	return s
+	// These tests work plans out by hand, so capacity serves from the first
+	// step unless a test says otherwise. The coldstart tests set their own.
+	return noColdstart(s)
 }
 
 func observation(at time.Time, capacity domain.Capacity, queues map[domain.Priority]domain.QueueInfo) domain.SystemState {
@@ -45,7 +47,7 @@ func TestAQuietSystemHoldsAtTheLocalFloor(t *testing.T) {
 	settings := engineSettings()
 	state := observation(noon, domain.Capacity{LocalReady: 1}, map[domain.Priority]domain.QueueInfo{})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	if got.Action != domain.ActionMaintain {
 		t.Errorf("Action = %q, want maintain", got.Action)
@@ -64,7 +66,7 @@ func TestAPredictedBreachRaisesCapacity(t *testing.T) {
 		100: {Depth: 300, OldestJobAge: 40 * time.Second, ArrivalRate: 2},
 	})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	if got.Plan.Total() <= 1 {
 		t.Fatalf("Plan = %+v, want more capacity than the single executor in place", got.Plan)
@@ -81,7 +83,7 @@ func TestOverflowBeyondTheLocalCapGoesToTheCloud(t *testing.T) {
 		100: {Depth: 2000, OldestJobAge: 50 * time.Second, ArrivalRate: 5},
 	})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	if got.Plan.LocalExecutors != settings.LocalExecutorCap {
 		t.Errorf("LocalExecutors = %d, want the local tier filled to its cap of %d first",
@@ -98,7 +100,7 @@ func TestOverflowBeyondTheLocalCapGoesToTheCloud(t *testing.T) {
 func TestAScaleUpCooldownHoldsCapacityAndSaysSo(t *testing.T) {
 	settings := engineSettings()
 	settings.ScaleUpCooldown = 2 * time.Minute
-	loop := policy.LoopState{LastScaleUp: noon.Add(-30 * time.Second)}
+	loop := domain.LoopState{LastScaleUp: noon.Add(-30 * time.Second)}
 
 	state := observation(noon, domain.Capacity{LocalReady: 2}, map[domain.Priority]domain.QueueInfo{
 		100: {Depth: 300, OldestJobAge: 40 * time.Second, ArrivalRate: 2},
@@ -119,7 +121,7 @@ func TestAScaleUpCooldownHoldsCapacityAndSaysSo(t *testing.T) {
 func TestTheScaleUpCooldownDoesNotBlockAScaleDown(t *testing.T) {
 	settings := engineSettings()
 	settings.ScaleUpCooldown = time.Hour
-	loop := policy.LoopState{LastScaleUp: noon.Add(-time.Second)}
+	loop := domain.LoopState{LastScaleUp: noon.Add(-time.Second)}
 
 	// Nothing to do, eight executors idle.
 	state := observation(noon, domain.Capacity{LocalReady: 8}, map[domain.Priority]domain.QueueInfo{})
@@ -135,7 +137,7 @@ func TestTheScaleUpCooldownDoesNotBlockAScaleDown(t *testing.T) {
 func TestAScaleDownCooldownKeepsIdleCapacity(t *testing.T) {
 	settings := engineSettings()
 	settings.ScaleDownCooldown = 10 * time.Minute
-	loop := policy.LoopState{LastScaleDown: noon.Add(-time.Minute)}
+	loop := domain.LoopState{LastScaleDown: noon.Add(-time.Minute)}
 
 	state := observation(noon, domain.Capacity{LocalReady: 8}, map[domain.Priority]domain.QueueInfo{})
 
@@ -154,7 +156,7 @@ func TestScaleUpIsLimitedToOneStepPerCycle(t *testing.T) {
 		100: {Depth: 2000, OldestJobAge: 50 * time.Second, ArrivalRate: 5},
 	})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	localDelta, cloudDelta := got.Delta()
 	if localDelta > 3 {
@@ -174,7 +176,7 @@ func TestScaleDownIsLimitedToOneStepPerCycle(t *testing.T) {
 	state := observation(noon, domain.Capacity{LocalReady: 10, CloudReady: 5},
 		map[domain.Priority]domain.QueueInfo{})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	localDelta, cloudDelta := got.Delta()
 	if localDelta < -2 {
@@ -191,7 +193,7 @@ func TestScaleDownIsLimitedToOneStepPerCycle(t *testing.T) {
 func TestCloudCapacityIsHeldForItsMinimumLifetime(t *testing.T) {
 	settings := engineSettings()
 	settings.CloudMinLifetime = 10 * time.Minute
-	loop := policy.LoopState{CloudSince: noon.Add(-2 * time.Minute)}
+	loop := domain.LoopState{CloudSince: noon.Add(-2 * time.Minute)}
 
 	state := observation(noon, domain.Capacity{LocalReady: 10, CloudReady: 6},
 		map[domain.Priority]domain.QueueInfo{})
@@ -209,7 +211,7 @@ func TestCloudCapacityIsHeldForItsMinimumLifetime(t *testing.T) {
 func TestCloudCapacityIsReleasedOnceItsLifetimeHasElapsed(t *testing.T) {
 	settings := engineSettings()
 	settings.CloudMinLifetime = 10 * time.Minute
-	loop := policy.LoopState{CloudSince: noon.Add(-30 * time.Minute)}
+	loop := domain.LoopState{CloudSince: noon.Add(-30 * time.Minute)}
 
 	state := observation(noon, domain.Capacity{LocalReady: 10, CloudReady: 6},
 		map[domain.Priority]domain.QueueInfo{})
@@ -227,7 +229,7 @@ func TestPendingExecutorsCountAsCapacityAlreadyRequested(t *testing.T) {
 	state := observation(noon, domain.Capacity{LocalReady: 4, LocalPending: 6},
 		map[domain.Priority]domain.QueueInfo{})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	if want := (domain.Plan{LocalExecutors: 10}); got.Previous != want {
 		t.Errorf("Previous = %+v, want %+v — pending executors are already "+
@@ -240,7 +242,7 @@ func TestAnUnusableObservationHoldsTheCurrentPlan(t *testing.T) {
 	state := observation(noon, domain.Capacity{LocalReady: 4}, map[domain.Priority]domain.QueueInfo{})
 	state.ExecutorThroughput = 0 // never a real reading
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	if !got.IsNoop() {
 		t.Errorf("Plan = %+v, want capacity left exactly as it is when the "+
@@ -260,7 +262,7 @@ func TestTheDecisionNeverExceedsEitherCap(t *testing.T) {
 		100: {Depth: 100000, OldestJobAge: 59 * time.Second, ArrivalRate: 900},
 	})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	if got.Plan.LocalExecutors > settings.LocalExecutorCap {
 		t.Errorf("LocalExecutors = %d, want at most %d", got.Plan.LocalExecutors, settings.LocalExecutorCap)
@@ -276,7 +278,7 @@ func TestTheLocalFloorSurvivesAStepLimitedRetreat(t *testing.T) {
 	settings.MaxScaleDownStep = 100
 	state := observation(noon, domain.Capacity{LocalReady: 10}, map[domain.Priority]domain.QueueInfo{})
 
-	got, _ := policy.Decide(state, policy.LoopState{}, settings)
+	got, _ := policy.Decide(state, domain.LoopState{}, settings)
 
 	if got.Plan.LocalExecutors < 3 {
 		t.Errorf("LocalExecutors = %d, want the floor of 3 respected", got.Plan.LocalExecutors)
@@ -289,7 +291,7 @@ func TestLoopStateRecordsWhenCapacityMoved(t *testing.T) {
 		100: {Depth: 300, OldestJobAge: 40 * time.Second, ArrivalRate: 2},
 	})
 
-	_, next := policy.Decide(state, policy.LoopState{}, settings)
+	_, next := policy.Decide(state, domain.LoopState{}, settings)
 
 	if !next.LastScaleUp.Equal(noon) {
 		t.Errorf("LastScaleUp = %v, want the observation's own timestamp %v", next.LastScaleUp, noon)
@@ -298,7 +300,7 @@ func TestLoopStateRecordsWhenCapacityMoved(t *testing.T) {
 
 func TestLoopStateIsUntouchedWhenNothingMoves(t *testing.T) {
 	settings := engineSettings()
-	before := policy.LoopState{LastScaleUp: noon.Add(-time.Hour), LastScaleDown: noon.Add(-time.Hour)}
+	before := domain.LoopState{LastScaleUp: noon.Add(-time.Hour), LastScaleDown: noon.Add(-time.Hour)}
 	state := observation(noon, domain.Capacity{LocalReady: 1}, map[domain.Priority]domain.QueueInfo{})
 
 	got, next := policy.Decide(state, before, settings)
@@ -318,7 +320,7 @@ func TestCloudSinceIsStampedWhenTheCloudTierGrows(t *testing.T) {
 		100: {Depth: 2000, OldestJobAge: 50 * time.Second, ArrivalRate: 5},
 	})
 
-	_, next := policy.Decide(state, policy.LoopState{}, settings)
+	_, next := policy.Decide(state, domain.LoopState{}, settings)
 
 	if !next.CloudSince.Equal(noon) {
 		t.Errorf("CloudSince = %v, want %v — the clock starts when the cloud tier grows",
@@ -329,7 +331,7 @@ func TestCloudSinceIsStampedWhenTheCloudTierGrows(t *testing.T) {
 func TestCloudSinceClearsWhenTheCloudTierIsEmptied(t *testing.T) {
 	settings := engineSettings()
 	settings.MaxScaleDownStep = 100
-	loop := policy.LoopState{CloudSince: noon.Add(-time.Hour)}
+	loop := domain.LoopState{CloudSince: noon.Add(-time.Hour)}
 	state := observation(noon, domain.Capacity{LocalReady: 2, CloudReady: 4},
 		map[domain.Priority]domain.QueueInfo{})
 
@@ -345,7 +347,7 @@ func TestCloudSinceClearsWhenTheCloudTierIsEmptied(t *testing.T) {
 
 func TestDecideIsDeterministic(t *testing.T) {
 	settings := engineSettings()
-	loop := policy.LoopState{LastScaleUp: noon.Add(-3 * time.Minute)}
+	loop := domain.LoopState{LastScaleUp: noon.Add(-3 * time.Minute)}
 	state := observation(noon, domain.Capacity{LocalReady: 3, CloudReady: 2, LocalPending: 1},
 		map[domain.Priority]domain.QueueInfo{
 			100: {Depth: 143, OldestJobAge: 21 * time.Second, ArrivalRate: 1.7},

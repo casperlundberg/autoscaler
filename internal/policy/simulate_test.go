@@ -23,6 +23,22 @@ func baseSettings() config.Settings {
 	return s
 }
 
+// noColdstart isolates a test from the capacity ramp. The tests whose subject
+// is the search, the tier split or the queue mechanics are clearer with
+// provisioning delay switched off, and coldstart then has tests of its own
+// where it is the only thing varying.
+func noColdstart(s config.Settings) config.Settings {
+	s.LocalColdstart, s.CloudColdstart = 0, 0
+	return s
+}
+
+// ramp is the availability Required simulates a candidate count under, so a
+// test can assert against exactly what the engine saw rather than against a
+// re-derivation of it.
+func ramp(state domain.SystemState, executors int, s config.Settings) policy.Availability {
+	return policy.AvailabilityOf(policy.SplitTiers(executors, s), state.Capacity, s)
+}
+
 func stateWith(throughput float64, queues map[domain.Priority]domain.QueueInfo) domain.SystemState {
 	return domain.SystemState{
 		Timestamp:          time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC),
@@ -34,7 +50,7 @@ func stateWith(throughput float64, queues map[domain.Priority]domain.QueueInfo) 
 func TestAnEmptyQueueNeverBreaches(t *testing.T) {
 	state := stateWith(1, map[domain.Priority]domain.QueueInfo{})
 
-	got := policy.Simulate(state, 1, baseSettings())
+	got := policy.Simulate(state, policy.Instant(1), baseSettings())
 
 	if got.BreachExpected {
 		t.Errorf("BreachExpected = true on an empty queue: %+v", got)
@@ -50,7 +66,7 @@ func TestAmpleCapacityDrainsTheQueueWithoutBreaching(t *testing.T) {
 		100: {Depth: 20, OldestJobAge: 5 * time.Second},
 	})
 
-	got := policy.Simulate(state, 10, baseSettings())
+	got := policy.Simulate(state, policy.Instant(10), baseSettings())
 
 	if got.BreachExpected {
 		t.Errorf("BreachExpected = true with ample capacity: %+v", got)
@@ -70,7 +86,7 @@ func TestWithNoExecutorsTheOldestJobAgesPastItsDeadline(t *testing.T) {
 		100: {Depth: 5, OldestJobAge: 40 * time.Second},
 	})
 
-	got := policy.Simulate(state, 0, baseSettings())
+	got := policy.Simulate(state, policy.Instant(0), baseSettings())
 
 	if !got.BreachExpected {
 		t.Fatalf("BreachExpected = false with zero executors: %+v", got)
@@ -94,7 +110,7 @@ func TestHighPriorityWorkStarvesLowPriorityWork(t *testing.T) {
 		50:  {Depth: 30, OldestJobAge: 4 * time.Minute},
 	})
 
-	got := policy.Simulate(state, 1, settings)
+	got := policy.Simulate(state, policy.Instant(1), settings)
 
 	if !got.BreachExpected {
 		t.Fatalf("BreachExpected = false, want the starved level to breach: %+v", got)
@@ -110,7 +126,7 @@ func TestArrivalsOutpacingServiceGrowTheQueue(t *testing.T) {
 		100: {Depth: 10, ArrivalRate: 2.0},
 	})
 
-	got := policy.Simulate(state, 1, baseSettings())
+	got := policy.Simulate(state, policy.Instant(1), baseSettings())
 
 	if got.PeakQueueDepth <= 10 {
 		t.Errorf("PeakQueueDepth = %d, want it to grow beyond the starting depth of 10", got.PeakQueueDepth)
@@ -134,7 +150,7 @@ func TestTheEarliestBreachIsTheOneReported(t *testing.T) {
 		50:  {Depth: 20, OldestJobAge: 55 * time.Second},
 	})
 
-	got := policy.Simulate(state, 1, settings)
+	got := policy.Simulate(state, policy.Instant(1), settings)
 
 	if !got.BreachExpected {
 		t.Fatal("BreachExpected = false, want a breach")
@@ -154,7 +170,7 @@ func TestAPriorityWithNoWaitingJobsCannotBreach(t *testing.T) {
 		100: {Depth: 0, OldestJobAge: time.Hour},
 	})
 
-	got := policy.Simulate(state, 1, settings)
+	got := policy.Simulate(state, policy.Instant(1), settings)
 
 	if got.BreachExpected {
 		t.Errorf("BreachExpected = true for an empty level: %+v", got)
@@ -170,7 +186,7 @@ func TestAnUnconfiguredPriorityUsesTheDefaultDeadline(t *testing.T) {
 		7: {Depth: 5, OldestJobAge: 25 * time.Second},
 	})
 
-	got := policy.Simulate(state, 0, settings)
+	got := policy.Simulate(state, policy.Instant(0), settings)
 
 	if !got.BreachExpected || got.FirstBreachPriority != 7 {
 		t.Errorf("Simulate() = %+v, want a breach at the unconfigured level 7 "+
@@ -188,9 +204,9 @@ func TestSimulateIsDeterministic(t *testing.T) {
 		25:  {Depth: 200, OldestJobAge: 40 * time.Minute, ArrivalRate: 0.1},
 	})
 
-	first := policy.Simulate(state, 3, settings)
+	first := policy.Simulate(state, policy.Instant(3), settings)
 	for i := 0; i < 25; i++ {
-		if got := policy.Simulate(state, 3, settings); got != first {
+		if got := policy.Simulate(state, policy.Instant(3), settings); got != first {
 			t.Fatalf("Simulate() run %d = %+v, want the identical %+v", i, got, first)
 		}
 	}
@@ -202,7 +218,7 @@ func TestSimulateNeverReportsABreachBeyondTheHorizon(t *testing.T) {
 		100: {Depth: 1000, OldestJobAge: 0, ArrivalRate: 5},
 	})
 
-	got := policy.Simulate(state, 0, settings)
+	got := policy.Simulate(state, policy.Instant(0), settings)
 
 	if got.FirstBreachIn > settings.Horizon {
 		t.Errorf("FirstBreachIn = %v, want no more than the horizon %v",
@@ -215,7 +231,7 @@ func TestSimulateDoesNotMutateTheObservation(t *testing.T) {
 		100: {Depth: 40, OldestJobAge: 5 * time.Second, ArrivalRate: 1},
 	})
 
-	policy.Simulate(state, 2, baseSettings())
+	policy.Simulate(state, policy.Instant(2), baseSettings())
 
 	if got := state.Queues[100]; got.Depth != 40 || got.OldestJobAge != 5*time.Second {
 		t.Errorf("observation was mutated: %+v", got)
