@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -32,9 +33,20 @@ func (refusing) Validate(context.Context, platform.Target) error {
 	return errors.New("these credentials do not work")
 }
 
+// watching is a platform that can see its own queue, and may therefore hold an
+// autonomous target. simulation cannot, so without this nothing in this
+// package could exercise autonomous mode at all.
+type watching struct{ platform.Provisioner }
+
+func (watching) Kind() platform.Kind { return "watching" }
+func (watching) Schema() platform.Schema {
+	return platform.Schema{Kind: "watching", Summary: "sees its own queue", SeesWorkload: true}
+}
+func (watching) Validate(context.Context, platform.Target) error { return nil }
+
 func platforms(t *testing.T) *platform.Registry {
 	t.Helper()
-	reg, err := platform.NewRegistry(simulation.New(), refusing{})
+	reg, err := platform.NewRegistry(simulation.New(), refusing{}, watching{})
 	if err != nil {
 		t.Fatalf("NewRegistry() = %v", err)
 	}
@@ -427,4 +439,112 @@ func mustRoundTrip(t *testing.T, bundle secret.Bundle) secret.Bundle {
 		t.Fatalf("Unmarshal() = %v", err)
 	}
 	return back
+}
+
+// The runner cycles autonomous targets and skips driven ones, so a mode that is
+// lost on restart is a target that silently stops being scaled: the service
+// comes back healthy, the target is still listed with its settings and keys
+// intact, and nothing ever cycles it again. Nothing else in the system reports
+// this, which is what makes it worth a test of its own.
+func TestAnAutonomousTargetIsStillAutonomousAfterARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "targets.json")
+
+	store, err := registry.NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore() = %v", err)
+	}
+	first, err := registry.New(platforms(t), store)
+	if err != nil {
+		t.Fatalf("registry.New() = %v", err)
+	}
+
+	target := platform.Target{
+		ID: "storhall", Name: "Storhall", Kind: "watching",
+		Mode: platform.ModeAutonomous,
+	}
+	if _, err := first.Create(context.Background(), target, config.DefaultSettings()); err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+
+	reopened, err := registry.NewFileStore(path)
+	if err != nil {
+		t.Fatalf("reopening NewFileStore() = %v", err)
+	}
+	second, err := registry.New(platforms(t), reopened)
+	if err != nil {
+		t.Fatalf("second registry.New() = %v", err)
+	}
+
+	got, err := second.Get("storhall")
+	if err != nil {
+		t.Fatalf("Get() after restart = %v", err)
+	}
+	if got.Target.Mode != platform.ModeAutonomous {
+		t.Errorf("Mode = %q after a restart, want %q: the runner only cycles "+
+			"autonomous targets, so this one has silently stopped being scaled",
+			got.Target.Mode, platform.ModeAutonomous)
+	}
+}
+
+// Mode was lost across restarts because the on-disk shape simply did not have
+// the field, and every example test happened to use a target whose mode was
+// already the default. So rather than naming fields one at a time, this
+// compares the registry's whole view of a target before and after — and first
+// insists the fixture leaves nothing at its zero value, because a field that
+// is zero going in would survive being dropped.
+func TestEveryFieldOfATargetSurvivesARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "targets.json")
+
+	store, err := registry.NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore() = %v", err)
+	}
+	first, err := registry.New(platforms(t), store)
+	if err != nil {
+		t.Fatalf("registry.New() = %v", err)
+	}
+
+	target := platform.Target{
+		ID:          "storhall",
+		Name:        "Storhall",
+		Kind:        "watching",
+		Mode:        platform.ModeAutonomous,
+		Config:      map[string]string{"namespace": "mining", "deployment": "executors"},
+		Credentials: secret.NewBundle(map[string]string{"bearer_token": "real-token"}),
+	}
+
+	fixture := reflect.ValueOf(target)
+	for i := 0; i < fixture.NumField(); i++ {
+		if fixture.Field(i).IsZero() {
+			t.Fatalf("the fixture leaves Target.%s at its zero value, so this test "+
+				"could not tell whether that field is persisted at all",
+				fixture.Type().Field(i).Name)
+		}
+	}
+
+	if _, err := first.Create(context.Background(), target, config.DefaultSettings()); err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	before, err := first.Get("storhall")
+	if err != nil {
+		t.Fatalf("Get() = %v", err)
+	}
+
+	reopened, err := registry.NewFileStore(path)
+	if err != nil {
+		t.Fatalf("reopening NewFileStore() = %v", err)
+	}
+	second, err := registry.New(platforms(t), reopened)
+	if err != nil {
+		t.Fatalf("second registry.New() = %v", err)
+	}
+	after, err := second.Get("storhall")
+	if err != nil {
+		t.Fatalf("Get() after restart = %v", err)
+	}
+
+	if !reflect.DeepEqual(before.Target, after.Target) {
+		t.Errorf("the target changed across a restart\n before: %+v\n  after: %+v",
+			before.Target, after.Target)
+	}
 }

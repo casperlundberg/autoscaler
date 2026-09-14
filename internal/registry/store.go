@@ -81,9 +81,16 @@ func NewFileStore(path string) (*FileStore, error) {
 // secret.Bundle's Export rather than its JSON rendering, which redacts — the
 // one place in the service where that is the right thing to do.
 type persistedTarget struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Kind        platform.Kind     `json:"kind"`
+	ID   string        `json:"id"`
+	Name string        `json:"name"`
+	Kind platform.Kind `json:"kind"`
+
+	// Mode has to survive too. The runner cycles autonomous targets and skips
+	// driven ones, so a mode lost here is a target that comes back listed,
+	// settings and keys intact, and never scaled again — with nothing
+	// anywhere reporting it.
+	Mode platform.Mode `json:"mode,omitempty"`
+
 	Config      map[string]string `json:"config"`
 	Credentials map[string]string `json:"credentials"`
 	Settings    config.Settings   `json:"settings"`
@@ -114,7 +121,7 @@ func (f *FileStore) Load() ([]Persisted, error) {
 	for _, s := range stored {
 		out = append(out, Persisted{
 			Target: platform.Target{
-				ID: s.ID, Name: s.Name, Kind: s.Kind, Config: s.Config,
+				ID: s.ID, Name: s.Name, Kind: s.Kind, Mode: s.Mode, Config: s.Config,
 				Credentials: secret.NewBundle(s.Credentials),
 			},
 			Settings:  s.Settings,
@@ -138,6 +145,7 @@ func (f *FileStore) Save(targets []Persisted) error {
 	for _, t := range targets {
 		stored = append(stored, persistedTarget{
 			ID: t.Target.ID, Name: t.Target.Name, Kind: t.Target.Kind,
+			Mode:        t.Target.Mode,
 			Config:      t.Target.Config,
 			Credentials: t.Target.Credentials.Export(),
 			Settings:    t.Settings,
