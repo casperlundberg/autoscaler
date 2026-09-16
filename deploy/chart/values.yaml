@@ -68,6 +68,23 @@ logLevel: info
 
 podSecurityContext:
   runAsNonRoot: true
+  # Numeric, and it has to be. The image's own USER is "nonroot:nonroot" — a
+  # name — and the kubelet cannot prove a name is non-root, so with
+  # runAsNonRoot set and no runAsUser it refuses the container outright:
+  #
+  #   container has runAsNonRoot and image has non-numeric user (nonroot),
+  #   cannot verify user is non-root
+  #
+  # 65532 is the uid behind that name in gcr.io/distroless/static-debian12,
+  # whose own config says USER "65532"; the Dockerfile's USER line is what
+  # replaces it with the unverifiable name.
+  runAsUser: 65532
+  runAsGroup: 65532
+  # The state volume is a PVC, and a freshly provisioned one is owned by root.
+  # Without fsGroup the process starts and then cannot write targets.json —
+  # which is a worse failure than not starting, because the service comes up
+  # healthy and only loses every target it is asked to remember.
+  fsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 
