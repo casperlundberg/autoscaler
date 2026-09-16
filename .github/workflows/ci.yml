@@ -151,6 +151,11 @@ jobs:
             echo "diff touches something other than the tag:"; git diff -- "$file"; exit 1
           fi
 
+          # Stage the one file by name. `git commit -a` would sweep in anything
+          # else that happened to be dirty; naming it keeps the commit as
+          # narrow as the checks above just proved the change to be.
+          git add "$file"
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -q -m "Deploy autoscaler ${SHA:0:12}" \
