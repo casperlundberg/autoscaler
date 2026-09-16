@@ -73,3 +73,98 @@ jobs:
           # scratch, which is most of the build.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Point the cluster at what was just built.
+  #
+  # Without this the pipeline stops at the registry: CI publishes
+  # sha-<commit>, the Application in the infra repo goes on naming an older
+  # one, and the new code never reaches the cluster. That gap is why the
+  # deployment once sat broken for 45 hours with every check green.
+  #
+  # It deploys by committing to the GitOps repo rather than touching the
+  # cluster, so the deploy is an ordinary reviewable commit and ArgoCD stays
+  # the only thing that writes to Kubernetes.
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Two pushes in quick succession would otherwise race each other into the
+    # infra repo; the later one wins, which is the right answer, but only if
+    # they go one at a time.
+    concurrency:
+      group: deploy-autoscaler-to-infra
+      cancel-in-progress: false
+    steps:
+      # The secret does not exist until someone creates it, and a deploy job
+      # that fails for a missing credential would turn every build red for a
+      # reason that has nothing to do with the build. Skip, loudly, instead.
+      - id: guard
+        env:
+          TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "INFRA_REPO_TOKEN is not set, so this build will not be deployed."
+            echo "Add a token with write access to"
+            echo "vikingvault-labs/vikingvault-infrastructure to this repository's"
+            echo "secrets to close the loop from a green build to the cluster."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.ok == 'true'
+        with:
+          repository: vikingvault-labs/vikingvault-infrastructure
+          token: ${{ secrets.INFRA_REPO_TOKEN }}
+
+      - name: move the pinned tag to this commit
+        if: steps.guard.outputs.ok == 'true'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          file="devops/argocd-applications/autoscale-platform-autoscaler.yaml"
+          [ -f "$file" ] || { echo "no such Application: $file"; exit 1; }
+
+          # Exactly one pinned tag, or the edit is ambiguous and must not be
+          # guessed at.
+          n=$(grep -c '^ *tag: "sha-' "$file" || true)
+          [ "$n" = "1" ] || { echo "expected 1 pinned tag in $file, found $n"; exit 1; }
+
+          current=$(grep -oP '^ *tag: "\K[^"]+' "$file")
+          if [ "$current" = "sha-$SHA" ]; then
+            echo "already at sha-$SHA"; exit 0
+          fi
+
+          sed -i -E "s|^( *tag: )\"sha-[0-9a-f]{40}\"|\\1\"sha-${SHA}\"|" "$file"
+
+          # The token this runs with can write to more than this file. The job
+          # is what keeps the change small, so it refuses to commit anything
+          # but the one tag line it exists to move.
+          changed=$(git diff --name-only)
+          [ "$changed" = "$file" ] || { echo "expected only $file to change, got: $changed"; exit 1; }
+          [ "$(git diff --numstat -- "$file")" = "1	1	$file" ] || {
+            echo "expected exactly one changed line:"; git diff -- "$file"; exit 1; }
+          if git diff -U0 -- "$file" | grep -E '^[+-][^+-]' \
+               | grep -qvE '^[+-] *tag: "sha-[0-9a-f]{40}"$'; then
+            echo "diff touches something other than the tag:"; git diff -- "$file"; exit 1
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "Deploy autoscaler ${SHA:0:12}" \
+            -m "Built and published by autoscaler CI from ${SHA}." \
+            -m "Only the pinned image tag changed; the job refuses to commit anything else."
+
+          # Another service's CI may have landed its own bump in between. Its
+          # commit touches a different file, so a rebase is clean.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "deployed: $current -> sha-$SHA"; exit 0
+            fi
+            echo "push rejected, rebasing (attempt $attempt)"
+            git pull --rebase --quiet
+            sleep $(( attempt * 3 ))
+          done
+          echo "could not push after 5 attempts"; exit 1
