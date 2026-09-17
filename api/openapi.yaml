@@ -63,6 +63,33 @@ paths:
                 properties:
                   status: { type: string, example: ok }
 
+  /v1/version:
+    get:
+      summary: Which build is making the decisions
+      description: |
+        The release and commit this process was built from. A client that
+        records results records this with them, so every result names, and
+        can be rebuilt from, the code that produced it.
+      responses:
+        "200":
+          description: The build.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    description: |
+                      Semantic version: a release such as 1.3.0, or a development
+                      build such as 1.3.1-dev.2+abc1234 (".dirty" when built
+                      with uncommitted changes). Empty when not stamped.
+                    example: 1.3.0
+                  commit: { type: string, description: Full commit hash; empty when unknown. }
+                  modified: { type: boolean, description: Built with changes the commit does not contain. }
+                  go_version: { type: string }
+                  platform: { type: string, description: "GOOS/GOARCH, e.g. linux/amd64.", example: linux/amd64 }
+
   /v1/platforms:
     get:
       tags: [platforms]

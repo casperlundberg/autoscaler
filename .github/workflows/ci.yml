@@ -3,6 +3,9 @@ name: ci
 on:
   push:
     branches: [main]
+    # A release tag builds an image named for the release. It does not deploy:
+    # the commit it tags was already built and deployed from main.
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -17,6 +20,9 @@ jobs:
       - run: make fmt-check
       - run: make vet
       - run: make test-race
+      # The version stamped on every image comes from these, so they are
+      # tested against real repositories and tags like the code is.
+      - run: make scripts-test
 
   # Push to main only, and only behind check: a published tag is something a
   # cluster can pull, so nothing that has not passed the suite gets one. A
@@ -24,7 +30,7 @@ jobs:
   # indistinguishable from one that had been reviewed.
   image:
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       # Docker Hub authenticates from repository secrets, not from the
@@ -33,6 +39,17 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history and its tags: the version is derived from the
+          # nearest release tag and the commits since it.
+          fetch-depth: 0
+
+      # Which code this image is, stamped into it so a running service can say.
+      # A release pushes its commit and tag together, so a build of that commit
+      # already sees the tag and is stamped with the release, not a dev build.
+      - id: version
+        run: echo "version=$(scripts/version.sh)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
       # DOCKER_A is an access token on the DOCKERHUB_USERNAME account. Of the
       # two tokens stored, it is the one that authenticates — DOCKER_B is
@@ -59,9 +76,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: docker.io/cappelumpa/autoscaler
+          # sha-<commit> and main from the branch; the release version from a
+          # tag. A tag build must not push sha-<commit>: that tag already names
+          # the image deployed from main, and a pinned tag that changes content
+          # underneath a deployment is not pinned.
           tags: |
-            type=sha,format=long
-            type=raw,value=main
+            type=sha,format=long,enable=${{ github.ref_type == 'branch' }}
+            type=raw,value=main,enable=${{ github.ref_type == 'branch' }}
+            type=semver,pattern={{version}}
 
       - uses: docker/build-push-action@v6
         with:
@@ -69,6 +91,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+            MODIFIED=false
           # Without a cache every push recompiles the module graph from
           # scratch, which is most of the build.
           cache-from: type=gha

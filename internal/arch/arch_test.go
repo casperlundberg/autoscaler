@@ -24,7 +24,10 @@ var mayImport = map[string][]string{
 
 	"internal/domain": {},
 	"internal/secret": {},
-	"internal/config": {"internal/domain"},
+
+	// Which code this process is. Imports nothing, so anything may report it.
+	"internal/buildinfo": {},
+	"internal/config":    {"internal/domain"},
 
 	// This package. It reads the graph and imports none of it, which is the
 	// only way a layering test cannot quietly exempt itself.
@@ -52,7 +55,7 @@ var mayImport = map[string][]string{
 	// The one place policy and platform meet.
 	"internal/controller": {"internal/config", "internal/domain", "internal/platform", "internal/policy", "internal/registry"},
 
-	"internal/api": {"internal/config", "internal/controller", "internal/domain", "internal/platform", "internal/registry"},
+	"internal/api": {"internal/buildinfo", "internal/config", "internal/controller", "internal/domain", "internal/platform", "internal/registry"},
 
 	"internal/app": nil, // the composition root sees everything
 }

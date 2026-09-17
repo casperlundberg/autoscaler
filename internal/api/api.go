@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/casperlundberg/autoscaler/internal/buildinfo"
 	"github.com/casperlundberg/autoscaler/internal/config"
 	"github.com/casperlundberg/autoscaler/internal/controller"
 	"github.com/casperlundberg/autoscaler/internal/platform"
@@ -62,6 +63,7 @@ var routes = []route{
 	{http.MethodGet, "/healthz", true, func(s *server) http.HandlerFunc { return s.health }},
 	{http.MethodGet, "/readyz", true, func(s *server) http.HandlerFunc { return s.health }},
 
+	{http.MethodGet, "/v1/version", false, func(s *server) http.HandlerFunc { return s.version }},
 	{http.MethodGet, "/v1/platforms", false, func(s *server) http.HandlerFunc { return s.listPlatforms }},
 	{http.MethodGet, "/v1/settings/defaults", false, func(s *server) http.HandlerFunc { return s.defaultSettings }},
 
@@ -376,4 +378,11 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"error": message})
+}
+
+// version is which code is making the decisions: the release and commit this
+// process was built from. A client recording results records this with them,
+// so a result can be traced to, and rebuilt from, the code that produced it.
+func (s *server) version(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, buildinfo.Read())
 }

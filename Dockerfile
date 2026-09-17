@@ -10,9 +10,21 @@ RUN go mod download
 
 COPY . .
 
+# Which code this is. There is no .git in the build context, so CI passes the
+# version and commit in, and they are stamped into the binary for
+# /v1/version to report. Unstamped, the binary says it does not know.
+ARG VERSION=""
+ARG COMMIT=""
+ARG MODIFIED="false"
+
 # CGO off and a static build, because the runtime image has no libc.
 # Symbols and DWARF stripped: this binary is deployed, not debugged in place.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/autoscaler ./cmd/autoscaler
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w \
+        -X github.com/casperlundberg/autoscaler/internal/buildinfo.version=${VERSION} \
+        -X github.com/casperlundberg/autoscaler/internal/buildinfo.commit=${COMMIT} \
+        -X github.com/casperlundberg/autoscaler/internal/buildinfo.modified=${MODIFIED}" \
+      -o /out/autoscaler ./cmd/autoscaler
 
 # Runtime stage. Static distroless: no shell, no package manager, nothing to
 # pivot to. This process holds Kubernetes tokens, ColonyOS private keys and

@@ -468,3 +468,23 @@ func TestAnUnknownFieldInATargetIsRefused(t *testing.T) {
 		t.Errorf("POST with an unknown field = %d, want 400", resp.StatusCode)
 	}
 }
+
+// A client recording results records which autoscaler decided them, so the
+// autoscaler has to be able to say.
+func TestTheServiceSaysWhichBuildItIs(t *testing.T) {
+	f := newFixture(t, "")
+
+	resp := f.do(t, http.MethodGet, "/v1/version", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/version = %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	for _, field := range []string{"version", "commit", "modified", "go_version", "platform"} {
+		if _, ok := body[field]; !ok {
+			t.Errorf("the version response has no %q: %v", field, body)
+		}
+	}
+}
