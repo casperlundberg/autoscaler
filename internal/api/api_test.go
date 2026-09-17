@@ -395,6 +395,41 @@ func TestACycleCanBeDrivenWithASuppliedWorkload(t *testing.T) {
 	}
 }
 
+// Work sent as burst_exempt reaches the engine as exempt work: the same queue
+// that buys cloud when counted buys none when exempt.
+func TestWorkSentAsBurstExemptDoesNotBuyCloud(t *testing.T) {
+	queue := map[string]any{
+		"100": map[string]any{"depth": 400, "oldest_job_age_seconds": 50, "arrival_rate_per_second": 2},
+	}
+	cloudFor := func(t *testing.T, key string) float64 {
+		f := newFixture(t, "")
+		createTarget(t, f)
+		if resp := f.do(t, http.MethodPatch, "/v1/targets/run-1/settings", map[string]any{
+			"local_executor_cap": 2, "min_local_executors": 0,
+		}); resp.StatusCode != http.StatusOK {
+			t.Fatalf("PATCH settings = %d: %v", resp.StatusCode, decode(t, resp))
+		}
+		resp := f.do(t, http.MethodPost, "/v1/targets/run-1/cycle", map[string]any{
+			"at":       "2026-09-10T12:00:00Z",
+			"workload": map[string]any{key: queue, "executor_throughput_per_second": 1},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST cycle = %d: %v", resp.StatusCode, decode(t, resp))
+		}
+		decision, _ := decode(t, resp)["decision"].(map[string]any)
+		plan, _ := decision["plan"].(map[string]any)
+		cloud, _ := plan["cloud_executors"].(float64)
+		return cloud
+	}
+
+	if counted := cloudFor(t, "queues"); counted == 0 {
+		t.Fatal("counted, the queue buys no cloud; the test needs one that does")
+	}
+	if exempt := cloudFor(t, "burst_exempt"); exempt != 0 {
+		t.Errorf("cloud_executors = %v for the same queue sent as burst_exempt, want 0", exempt)
+	}
+}
+
 func TestACycleWithNoWorkloadOnADrivenTargetIs400(t *testing.T) {
 	f := newFixture(t, "")
 	createTarget(t, f)

@@ -82,6 +82,19 @@ type SystemState struct {
 	// Queues is the waiting work, keyed by priority level.
 	Queues map[Priority]QueueInfo `json:"queues"`
 
+	// BurstExempt is waiting work that may use capacity but may not be the
+	// reason cloud capacity is bought, keyed by priority level and not
+	// included in Queues.
+	//
+	// It is how an operator says that some work is allowed to miss its
+	// deadline rather than be paid for. It is still served, in priority order
+	// and first-in-first-out beside the counted work at its level, so it still
+	// takes capacity from whatever waits behind it — and the deadline of that
+	// work remains a reason to burst. Two separate descriptions rather than a
+	// share of one, because a level's oldest counted job cannot be recovered
+	// from the level's oldest job and its oldest exempt one.
+	BurstExempt map[Priority]QueueInfo `json:"burst_exempt,omitempty"`
+
 	Capacity Capacity `json:"capacity"`
 
 	// ExecutorThroughput is jobs completed per second by one executor. It is
@@ -90,22 +103,48 @@ type SystemState struct {
 	ExecutorThroughput float64 `json:"executor_throughput_per_second"`
 }
 
-// TotalDepth is the number of jobs waiting across every priority level.
+// TotalDepth is the number of jobs waiting across every priority level,
+// exempt from cloud burst or not.
 func (s SystemState) TotalDepth() int {
+	return depthOf(s.Queues) + depthOf(s.BurstExempt)
+}
+
+// ExemptDepth is the number of waiting jobs exempt from cloud burst.
+func (s SystemState) ExemptDepth() int { return depthOf(s.BurstExempt) }
+
+func depthOf(queues map[Priority]QueueInfo) int {
 	total := 0
-	for _, q := range s.Queues {
+	for _, q := range queues {
 		total += q.Depth
 	}
 	return total
 }
 
-// TotalArrivalRate is incoming jobs per second across every priority level.
+// TotalArrivalRate is incoming jobs per second across every priority level,
+// exempt from cloud burst or not.
 func (s SystemState) TotalArrivalRate() float64 {
 	total := 0.0
-	for _, q := range s.Queues {
+	// Summed in priority order: a float sum depends on its order, and the
+	// reasoning string built from it has to be the same for one observation.
+	for _, q := range s.SortedQueues() {
+		total += q.ArrivalRate
+	}
+	for _, q := range sortedByPriority(s.BurstExempt) {
 		total += q.ArrivalRate
 	}
 	return total
+}
+
+// HasBurstExempt reports whether any exempt work is waiting or arriving. An
+// observation that lists exempt levels with nothing in them decides exactly as
+// one that lists none.
+func (s SystemState) HasBurstExempt() bool {
+	for _, q := range s.BurstExempt {
+		if q.Depth > 0 || q.ArrivalRate > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // SortedQueues is the queues in descending priority order, each entry carrying
@@ -116,9 +155,15 @@ func (s SystemState) TotalArrivalRate() float64 {
 // the map directly would not be reproducible from the same observation, which
 // would make a replayed run disagree with the live one it is supposed to
 // explain.
-func (s SystemState) SortedQueues() []QueueInfo {
-	out := make([]QueueInfo, 0, len(s.Queues))
-	for priority, q := range s.Queues {
+func (s SystemState) SortedQueues() []QueueInfo { return sortedByPriority(s.Queues) }
+
+// SortedBurstExempt is the exempt work in descending priority order, as
+// SortedQueues is for the rest.
+func (s SystemState) SortedBurstExempt() []QueueInfo { return sortedByPriority(s.BurstExempt) }
+
+func sortedByPriority(queues map[Priority]QueueInfo) []QueueInfo {
+	out := make([]QueueInfo, 0, len(queues))
+	for priority, q := range queues {
 		q.Priority = priority
 		out = append(out, q)
 	}
@@ -139,17 +184,22 @@ func (s SystemState) Validate() error {
 			"calculation can act on", s.ExecutorThroughput)
 	}
 
-	for _, q := range s.SortedQueues() {
-		if q.Depth < 0 {
-			return fmt.Errorf("priority %d: depth must be >= 0, got %d", q.Priority, q.Depth)
-		}
-		if q.ArrivalRate < 0 {
-			return fmt.Errorf("priority %d: arrival_rate_per_second must be >= 0, got %v",
-				q.Priority, q.ArrivalRate)
-		}
-		if q.OldestJobAge < 0 {
-			return fmt.Errorf("priority %d: oldest_job_age must be >= 0, got %v",
-				q.Priority, q.OldestJobAge)
+	for _, group := range []struct {
+		name   string
+		queues []QueueInfo
+	}{{"queues", s.SortedQueues()}, {"burst_exempt", s.SortedBurstExempt()}} {
+		for _, q := range group.queues {
+			if q.Depth < 0 {
+				return fmt.Errorf("%s priority %d: depth must be >= 0, got %d", group.name, q.Priority, q.Depth)
+			}
+			if q.ArrivalRate < 0 {
+				return fmt.Errorf("%s priority %d: arrival_rate_per_second must be >= 0, got %v",
+					group.name, q.Priority, q.ArrivalRate)
+			}
+			if q.OldestJobAge < 0 {
+				return fmt.Errorf("%s priority %d: oldest_job_age must be >= 0, got %v",
+					group.name, q.Priority, q.OldestJobAge)
+			}
 		}
 	}
 

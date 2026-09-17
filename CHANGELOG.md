@@ -3,6 +3,16 @@
 Every release, newest first. `make release` will not tag a version without a
 section here, so the tag message and this file always agree.
 
+## 1.1.0 — 2026-09-17
+
+- Work exempt from cloud burst: a workload may carry `burst_exempt` queues
+  beside `queues`. Exempt work is served in priority order like any other and
+  may use all local capacity, but never justifies cloud capacity on its own; a
+  breach of it is predicted, flagged `breaches_exempt_only`, and accepted, and
+  the reasoning says how many executors avoiding it would have taken. Counted
+  work starved by exempt work ahead of it still justifies a burst.
+- An observation with no exempt work decides exactly as under 1.0.0.
+
 ## 1.0.0 — 2026-09-17
 
 The first versioned release. 1.0.0 rather than 0.x because the controller

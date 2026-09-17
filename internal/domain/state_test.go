@@ -131,6 +131,13 @@ func TestValidateRejectsMalformedStates(t *testing.T) {
 			wantErr: "oldest_job_age",
 		},
 		{
+			name: "negative exempt depth",
+			mutate: func(s *domain.SystemState) {
+				s.BurstExempt = map[domain.Priority]domain.QueueInfo{400: {Depth: -1}}
+			},
+			wantErr: "burst_exempt priority 400: depth",
+		},
+		{
 			name:    "negative executor count",
 			mutate:  func(s *domain.SystemState) { s.Capacity.LocalReady = -1 },
 			wantErr: "local_ready",
@@ -187,7 +194,7 @@ func TestProjectionRoundTripsThroughJSONAsSeconds(t *testing.T) {
 	original := domain.Projection{
 		BreachExpected: true, FirstBreachPriority: 100,
 		FirstBreachIn: 45 * time.Second, PeakQueueDepth: 900,
-		DrainedAt: 5 * time.Minute,
+		DrainedAt: 5 * time.Minute, BreachesExemptOnly: true,
 	}
 
 	encoded, err := json.Marshal(original)
@@ -200,5 +207,65 @@ func TestProjectionRoundTripsThroughJSONAsSeconds(t *testing.T) {
 	}
 	if back != original {
 		t.Errorf("round trip = %+v, want %+v", back, original)
+	}
+}
+
+// Exempt work is waiting work, and a total that left it out would tell an
+// operator reading a reason that the queue was shorter than it is.
+func TestTotalsIncludeWorkExemptFromCloudBurst(t *testing.T) {
+	state := sampleState()
+	state.BurstExempt = map[domain.Priority]domain.QueueInfo{
+		400: {Depth: 7, ArrivalRate: 1.5},
+		25:  {Depth: 3},
+	}
+
+	if got := state.TotalDepth(); got != 65 {
+		t.Errorf("TotalDepth() = %d, want 55 counted plus 10 exempt", got)
+	}
+	if got := state.ExemptDepth(); got != 10 {
+		t.Errorf("ExemptDepth() = %d, want 10", got)
+	}
+	if got := state.TotalArrivalRate(); got < 2.2999 || got > 2.3001 {
+		t.Errorf("TotalArrivalRate() = %v, want 0.8 counted plus 1.5 exempt", got)
+	}
+}
+
+func TestAnExemptionWithNothingInItIsNoExemption(t *testing.T) {
+	state := sampleState()
+	if state.HasBurstExempt() {
+		t.Error("HasBurstExempt() = true with no exempt levels")
+	}
+	state.BurstExempt = map[domain.Priority]domain.QueueInfo{400: {}, 100: {OldestJobAge: time.Minute}}
+	if state.HasBurstExempt() {
+		t.Error("HasBurstExempt() = true for levels with nothing waiting and nothing arriving")
+	}
+	state.BurstExempt[50] = domain.QueueInfo{ArrivalRate: 0.1}
+	if !state.HasBurstExempt() {
+		t.Error("HasBurstExempt() = false with exempt work arriving")
+	}
+}
+
+func TestExemptWorkRoundTripsThroughTheObservation(t *testing.T) {
+	state := sampleState()
+	state.BurstExempt = map[domain.Priority]domain.QueueInfo{400: {Depth: 7, OldestJobAge: 45 * time.Second}}
+
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("Marshal() = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"burst_exempt":{"400":{"depth":7,"oldest_job_age_seconds":45`) {
+		t.Errorf("Marshal() = %s, want burst_exempt keyed by priority", encoded)
+	}
+	plain, _ := json.Marshal(sampleState())
+	if strings.Contains(string(plain), "burst_exempt") {
+		t.Errorf("Marshal() = %s: an observation with no exempt work should not mention it", plain)
+	}
+
+	var back domain.SystemState
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatalf("Unmarshal() = %v", err)
+	}
+	if back.BurstExempt[400] != (domain.QueueInfo{Depth: 7, OldestJobAge: 45 * time.Second}) {
+		t.Errorf("round trip BurstExempt = %+v", back.BurstExempt)
 	}
 }

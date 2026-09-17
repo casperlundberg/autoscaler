@@ -88,6 +88,11 @@ type Projection struct {
 	// DrainedAt is how long the queue took to clear, or 0 if it did not clear
 	// within the horizon.
 	DrainedAt time.Duration `json:"drained_at,omitempty"`
+
+	// BreachesExemptOnly is set when a breach is expected and every breach in
+	// the horizon is of work exempt from cloud burst: a breach the plan
+	// accepts rather than one it failed to prevent.
+	BreachesExemptOnly bool `json:"breaches_exempt_only,omitempty"`
 }
 
 // Decision is one cycle's output: the plan, what it changed, and why.
@@ -139,6 +144,7 @@ type projectionWire struct {
 	FirstBreachInSecs   float64  `json:"first_breach_in_seconds,omitempty"`
 	PeakQueueDepth      int      `json:"peak_queue_depth"`
 	DrainedAtSecs       float64  `json:"drained_at_seconds,omitempty"`
+	BreachesExemptOnly  bool     `json:"breaches_exempt_only,omitempty"`
 }
 
 // MarshalJSON renders a projection with its durations in seconds.
@@ -149,6 +155,7 @@ func (p Projection) MarshalJSON() ([]byte, error) {
 		FirstBreachInSecs:   p.FirstBreachIn.Seconds(),
 		PeakQueueDepth:      p.PeakQueueDepth,
 		DrainedAtSecs:       p.DrainedAt.Seconds(),
+		BreachesExemptOnly:  p.BreachesExemptOnly,
 	})
 }
 
@@ -164,6 +171,7 @@ func (p *Projection) UnmarshalJSON(data []byte) error {
 		FirstBreachIn:       time.Duration(wire.FirstBreachInSecs * float64(time.Second)),
 		PeakQueueDepth:      wire.PeakQueueDepth,
 		DrainedAt:           time.Duration(wire.DrainedAtSecs * float64(time.Second)),
+		BreachesExemptOnly:  wire.BreachesExemptOnly,
 	}
 	return nil
 }

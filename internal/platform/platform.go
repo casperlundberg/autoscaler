@@ -74,8 +74,13 @@ type Target struct {
 
 // Workload is the queue an adapter can see for itself.
 type Workload struct {
-	Queues             map[domain.Priority]domain.QueueInfo `json:"queues"`
-	ExecutorThroughput float64                              `json:"executor_throughput_per_second"`
+	Queues map[domain.Priority]domain.QueueInfo `json:"queues"`
+
+	// BurstExempt is waiting work that may use capacity but may not be the
+	// reason cloud capacity is bought; see domain.SystemState.
+	BurstExempt map[domain.Priority]domain.QueueInfo `json:"burst_exempt,omitempty"`
+
+	ExecutorThroughput float64 `json:"executor_throughput_per_second"`
 }
 
 // Observation is what an adapter reports back.

@@ -106,6 +106,38 @@ capacity could have dodged. The reasoning string names which case fired, so a
 run log shows a modest executor count beside an unavoidable breach and says
 why that was the right answer rather than looking like under-provisioning.
 
+### Work that may be late rather than paid for
+
+An observation can carry `burst_exempt` queues beside `queues`: work an
+operator has decided may miss its deadline rather than buy cloud capacity.
+Exempt work is still work. It is served in priority order and first in, first
+out beside counted work at its level, so it takes capacity from whatever waits
+behind it, and it still breaches in the projection — flagged
+`breaches_exempt_only` when nothing else does.
+
+`Required` searches twice. Counting every breach says how much capacity the work
+could use, and exempt work may have all of the local tier, which is already
+paid for. Counting only breaches of counted work says how much capacity the
+work justifies buying. The plan is the larger of the local share of the first
+and the whole of the second, so cloud is only ever overflow of counted work.
+Counted work starved by an exempt flood ahead of it is still a reason to burst:
+its deadline is the one being defended. When the plan stops short of what
+counting everything would have asked for, the reasoning names the breach being
+accepted and how many executors it would have cost.
+
+Two details of the model:
+
+- Within a level holding both kinds, each kind's ages are spread evenly from
+  its own head, and serving removes every job older than a cutoff whichever
+  kind it is. With one kind empty this is exactly the single-queue model.
+- A kind in a mixed level counts as waiting only from half a job. The even
+  spread leaves a sliver of each kind at every age until the whole level is
+  clear, and without the threshold a fifth of a job of counted work inside an
+  exempt backlog would breach with it and buy cloud for work that is not there.
+
+An observation with no exempt work decides exactly as it did before exemption
+existed; a level holding one kind is simulated by the same arithmetic as ever.
+
 This all has a useful consequence: the same engine that drives a real cluster
 can be pointed at recorded data and asked what it *would* have done, and the
 answer is produced by the identical code path, not a reimplementation.

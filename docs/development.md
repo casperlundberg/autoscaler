@@ -37,6 +37,15 @@ curl -sH "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
                    "executor_throughput_per_second":1}}' \
   localhost:8080/v1/targets/storhall/cycle | jq '.decision | {action, plan, reason}'
 
+# The same queue exempt from cloud burst: local fills to its cap, no cloud, and
+# the reason says what was not bought.
+curl -sH "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"at":"2026-09-10T12:00:15Z",
+       "workload":{"burst_exempt":{"100":{"depth":400,"oldest_job_age_seconds":50,
+                   "arrival_rate_per_second":2}},
+                   "executor_throughput_per_second":1}}' \
+  localhost:8080/v1/targets/storhall/cycle | jq '.decision | {action, plan, reason}'
+
 # Change the policy, and watch the next cycle obey it immediately.
 curl -sX PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"local_executor_cap": 2, "cloud_executor_cap": 0}' \

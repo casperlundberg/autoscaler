@@ -68,6 +68,12 @@ type Requirement struct {
 	// what the plan they are getting will really do, including the breach it
 	// cannot dodge.
 	Projection domain.Projection
+
+	// Withheld is how many more executors the work would have asked for had
+	// none of it been exempt from cloud burst. When it is above zero, Minimum
+	// and Outcome describe the counted work alone, and Executors is what that
+	// needs or the local cap, whichever is larger.
+	Withheld int
 }
 
 // Feasible reports whether the requirement avoids every predicted breach.
@@ -88,7 +94,50 @@ func (r Requirement) Feasible() bool { return r.Outcome == Achievable }
 // in the horizon; and Simulate serves each level what it needs before passing
 // the remainder down, so more capacity at every point can never turn a
 // satisfied level into a breaching one.
+//
+// Work exempt from cloud burst is sized for twice. With every breach counted,
+// the answer says how much local capacity the work can use — local capacity
+// is already paid for, and exempt work may have all of it. With only counted
+// breaches, the answer says how much capacity the work justifies buying. The
+// requirement is the larger of the local share of the first and the whole of
+// the second, so cloud is only ever overflow of counted work: exempt work
+// still takes capacity from the counted work behind it, and that work's
+// deadline stays a reason to burst.
 func Required(state domain.SystemState, settings config.Settings) Requirement {
+	everything := required(state, settings, func(p domain.Projection) bool { return p.BreachExpected })
+	if !state.HasBurstExempt() {
+		return everything
+	}
+	counted := required(state, settings, func(p domain.Projection) bool {
+		return p.BreachExpected && !p.BreachesExemptOnly
+	})
+
+	local := min(everything.Executors, settings.LocalExecutorCap)
+	executors := max(local, counted.Executors)
+	switch {
+	case executors == everything.Executors:
+		return everything
+	case executors > everything.Executors:
+		// Possible because the two searches can end in different outcomes: a
+		// breach of exempt work no count avoids asks only for the steady
+		// state, while counted work beside it can justify more to stay on
+		// time. The counted work's answer stands.
+		return counted
+	}
+
+	return Requirement{
+		Minimum:    counted.Minimum,
+		Executors:  executors,
+		Outcome:    counted.Outcome,
+		Projection: Simulate(state, AvailabilityOf(SplitTiers(executors, settings), state.Capacity, settings), settings),
+		Withheld:   everything.Executors - executors,
+	}
+}
+
+// required is the search behind Required, for one definition of a breach
+// worth provisioning against.
+func required(state domain.SystemState, settings config.Settings,
+	breach func(domain.Projection) bool) Requirement {
 	ceiling := settings.LocalExecutorCap + settings.CloudExecutorCap
 
 	// What a count of n actually provides, once the plan is split across tiers
@@ -97,7 +146,7 @@ func Required(state domain.SystemState, settings config.Settings) Requirement {
 		return AvailabilityOf(SplitTiers(n, settings), state.Capacity, settings)
 	}
 	breaches := func(available Availability) bool {
-		return Simulate(state, available, settings).BreachExpected
+		return breach(Simulate(state, available, settings))
 	}
 
 	minimum := sort.Search(ceiling+1, func(n int) bool { return !breaches(ramp(n)) })

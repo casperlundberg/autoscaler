@@ -130,6 +130,7 @@ func (c *Controller) execute(ctx context.Context, provisioner platform.Provision
 	state := domain.SystemState{
 		Timestamp:          now,
 		Queues:             workload.Queues,
+		BurstExempt:        workload.BurstExempt,
 		Capacity:           observation.Capacity,
 		ExecutorThroughput: workload.ExecutorThroughput,
 	}

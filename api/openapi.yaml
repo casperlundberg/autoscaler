@@ -660,6 +660,17 @@ components:
           type: object
           additionalProperties: { $ref: "#/components/schemas/QueueInfo" }
           description: Keyed by priority level. Higher is more urgent.
+        burst_exempt:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/QueueInfo" }
+          description: |
+            Waiting work that may use capacity but may not be the reason cloud
+            capacity is bought, keyed by priority level and not included in
+            `queues`. It is served like any other work — in priority order, and
+            first in, first out beside the counted work at its level — so it
+            still takes capacity from work behind it, and that work's deadline
+            is still a reason to burst. Local capacity is sized for all work;
+            cloud only for breaches of counted work. Omitted means none.
         executor_throughput_per_second:
           type: number
           description: |
@@ -697,6 +708,12 @@ components:
         drained_at_seconds:
           type: number
           description: When the queue clears, or absent if it does not within the horizon.
+        breaches_exempt_only:
+          type: boolean
+          description: |
+            A breach is expected, and every breach in the horizon is of work
+            exempt from cloud burst — accepted by the plan rather than missed.
+            Absent otherwise.
 
     Decision:
       type: object

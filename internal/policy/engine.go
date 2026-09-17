@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -166,6 +167,29 @@ func explain(state domain.SystemState, current domain.Plan, requirement Requirem
 	waiting := state.TotalDepth()
 	arriving := state.TotalArrivalRate()
 
+	if requirement.Withheld > 0 {
+		// The one case where the plan deliberately stops short of what the
+		// work would have asked for, so it is the one case that must never
+		// read like under-provisioning. It names the breach being accepted,
+		// what avoiding it would have cost, and what the counted work needs.
+		projection := requirement.Projection
+		accepted := fmt.Sprintf("no breach predicted at %d executors", requirement.Executors)
+		if projection.BreachExpected {
+			accepted = fmt.Sprintf("P%d breaches in %s at %d executors",
+				projection.FirstBreachPriority, projection.FirstBreachIn.Round(time.Second),
+				requirement.Executors)
+		}
+		return fmt.Sprintf(
+			"%s; only work exempt from cloud burst (%d of %d waiting) needs more, and the "+
+				"%d more executors it would take are not requested; counted work needs %d "+
+				"(minimum %d plus %.2fx safety, %s), and local capacity is used up to its cap "+
+				"of %d first; %.2f/s arriving",
+			accepted, state.ExemptDepth(), waiting, requirement.Withheld,
+			min(requirement.Executors, requirement.Minimum+headroom(requirement.Minimum, settings)),
+			requirement.Minimum, settings.SafetyFactor, requirement.Outcome,
+			settings.LocalExecutorCap, arriving)
+	}
+
 	switch requirement.Outcome {
 	case Overloaded:
 		return fmt.Sprintf(
@@ -213,6 +237,14 @@ func explain(state domain.SystemState, current domain.Plan, requirement Requirem
 	return fmt.Sprintf(
 		"no breach predicted at %d executors%s; requirement is %d for %d jobs waiting, %.2f/s arriving",
 		current.Total(), starting(state.Capacity), requirement.Executors, waiting, arriving)
+}
+
+// headroom is what the safety factor adds to a minimum.
+func headroom(minimum int, settings config.Settings) int {
+	if settings.SafetyFactor <= 1 {
+		return 0
+	}
+	return int(math.Ceil(float64(minimum)*settings.SafetyFactor)) - minimum
 }
 
 // starting annotates an executor count with how much of it cannot work yet.
