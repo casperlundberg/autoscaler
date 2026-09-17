@@ -77,6 +77,36 @@ drive it. It was built alongside two others, in sibling repositories:
   chart, per-cluster values, the credential inventory, and `verify.sh`, which
   runs all of it for real and checks the result.
 
+## Versions
+
+Releases are [semantic versions](https://semver.org), tagged `vMAJOR.MINOR.PATCH`
+and cut with
+
+```bash
+make release VERSION=1.3.0
+```
+
+which refuses a dirty tree, a branch other than `main`, a `main` behind its
+remote, a version not above the last release, a `CHANGELOG.md` with no section
+for it, and failing checks — then tags, with the changelog section as the tag
+message, and pushes the commit and the tag together so CI stamps the image with
+the release. Between releases a build is `1.3.1-dev.N+<commit>`, and `.dirty`
+when built with uncommitted changes (`make version` prints it). Every binary
+carries its version and commit; `GET /v1/version` reports them.
+
+For a controller whose decisions are research results, a version answers one
+question besides "will my client break": **will the same observation get the
+same decision?**
+
+- **MAJOR** — the HTTP API changes incompatibly, or a decision for the same
+  observation, settings and history can change.
+- **MINOR** — something is added (an endpoint, a setting, a platform) and every
+  existing decision is as it was.
+- **PATCH** — a fix that changes no decision and no contract.
+
+Every recorded Simlab run names the autoscaler build that decided it, so a
+decision can always be traced to its commit and rebuilt from it.
+
 ## Deployment
 
 `deploy/chart`. Two values have no defaults on purpose:
